@@ -1,10 +1,19 @@
 # cookie-use
 
+<p align="center">
+  <img src="assets/hero.png" alt="a sad cookie clutching a giant ring of keys, drowning in a pile of account cookies" width="560">
+</p>
+
 **Agent-friendly multi-account session manager.** Capture, store, and apply
 logged-in sessions for *any* website — across browsers, profiles, and isolated
 contexts. Built for the case where you have many accounts on one site (e.g. 100
 ChatGPT accounts) and want an agent to freely list, pick, and switch between
 them.
+
+<p align="center">
+  <img src="assets/accounts.png" alt="a wall of ~150 slightly-wrong cookie-face account avatars" width="420"><br>
+  <em>yes, all of these. one tool.</em>
+</p>
 
 cookie-use is **site-agnostic**: you name a domain, it manages that domain's
 session. Nothing about ChatGPT, Claude, or any specific site is hardcoded.
@@ -18,6 +27,13 @@ owns the **account model**, an **encrypted vault**, and the **orchestration**.
 > cookie decryption). Other platforms are a follow-up.
 
 ## Mental model
+
+<p align="center">
+  <img src="assets/flow.png" alt="folder + file + browser arrows into a padlocked chest, arrow out to a browser" width="520">
+</p>
+
+Many sources go *into* one locked box; one chosen account comes back *out* into a
+browser.
 
 ```
         capture                       apply
@@ -51,6 +67,10 @@ See <https://www.skills.sh/docs>. The skill lives at `skills/cookie-use/SKILL.md
 
 ## Commands (v0.1 MVP)
 
+<p align="center">
+  <img src="assets/switch.png" alt="a cursor flinging a cookie into a browser window logged in as dumb_user_1" width="320">
+</p>
+
 | Command | Does |
 |---|---|
 | `cookie-use add --from-profile <profile> --site <domain[,domain]> [--id <id>]` | Import a logged-in session from a Chrome profile (any site) |
@@ -66,11 +86,20 @@ See <https://www.skills.sh/docs>. The skill lives at `skills/cookie-use/SKILL.md
 `chatgpt.com,openai.com`) is captured as one account. Suffix matching also
 catches subdomains.
 
+<p align="center">
+  <img src="assets/profiles.png" alt="three crude browser windows each logged into a different cookie account with a SWITCH button" width="480"><br>
+  <em>apply any stored account into a real profile, an isolated browser, or a connected session.</em>
+</p>
+
 ## Vault & security
 
-- Location: `~/.cookie-use/vault.json` (AES-256-GCM encrypted blob).
+<p align="center">
+  <img src="assets/vault.png" alt="a crude metal safe with its door open and cookies spilling out" width="300">
+</p>
+
+- Location: `~/.cookie-use/vault.enc` (AES-256-GCM encrypted blob).
 - Master key: generated on first run, stored in the macOS Keychain
-  (`cookie-use vault key`). Cookie values never touch disk in plaintext.
+  (service `cookie-use`, account `vault-key`). Cookie values never touch disk in plaintext.
 - `show` / `list` never print secret values; errors never echo them.
 
 ## Roadmap (post-MVP)

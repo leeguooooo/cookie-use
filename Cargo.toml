@@ -1,0 +1,32 @@
+[package]
+name = "cookie-use"
+version = "0.1.0"
+edition = "2021"
+description = "Agent-friendly multi-account session manager — capture, store, and apply logged-in sessions for any website, across browsers and profiles."
+license = "Apache-2.0"
+repository = "https://github.com/leeguooooo/cookie-use"
+homepage = "https://github.com/leeguooooo/cookie-use"
+readme = "README.md"
+keywords = ["cookie", "session", "account", "browser", "automation"]
+categories = ["command-line-utilities", "authentication"]
+
+[[bin]]
+name = "cookie-use"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+aes-gcm = "0.10"
+rand = "0.8"
+base64 = "0.22"
+dirs = "5"
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+anyhow = "1"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true

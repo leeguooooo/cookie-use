@@ -38,6 +38,17 @@ curl -fsSL https://raw.githubusercontent.com/leeguooooo/cookie-use/main/install.
 
 Requires `chrome-use` on PATH (`curl -fsSL https://raw.githubusercontent.com/leeguooooo/chrome-use/main/install.sh | sh`).
 
+### As an agent skill (skills.sh)
+
+Install the cookie-use skill into your agent so it knows how to drive the CLI
+(it self-heals the binary on first use):
+
+```sh
+npx skills add leeguooooo/cookie-use
+```
+
+See <https://www.skills.sh/docs>. The skill lives at `skills/cookie-use/SKILL.md`.
+
 ## Commands (v0.1 MVP)
 
 | Command | Does |

@@ -73,11 +73,11 @@ See <https://www.skills.sh/docs>. The skill lives at `skills/cookie-use/SKILL.md
 
 | Command | Does |
 |---|---|
-| `cookie-use add --from-profile <profile> --site <domain[,domain]> [--id <id>]` | Import a logged-in session from a Chrome profile (any site) |
+| `cookie-use add --from-profile <profile> --site <domain[,domain]> [--id <id>] [--with-localstorage]` | Import a logged-in session from a Chrome profile (any site); optionally snapshot localStorage |
 | `cookie-use import --file <f> --site <domain> --id <id>` | Import from a JSON / cURL / Cookie-header export |
 | `cookie-use list [--site <domain>]` | List stored accounts (id, site, hint, status, last used) |
 | `cookie-use show <id>` | Account metadata (never prints cookie values) |
-| `cookie-use use <id> [--target session:<s>\|isolated\|profile:<p>]` | Apply an account into a browser target |
+| `cookie-use use <id> [--target session:<s>\|isolated] [--rewrite-domain <host>] [--open-url <url>]` | Apply an account into a browser target |
 | `cookie-use switch <id> --target <…>` | Clear the site's cookies in the target, then apply (clean switch) |
 | `cookie-use check <id>` | Liveness from cookie expiry (generic; site probes are pluggable later) |
 | `cookie-use rm <id>` / `rename <id> <new>` | Manage entries |
@@ -85,6 +85,23 @@ See <https://www.skills.sh/docs>. The skill lives at `skills/cookie-use/SKILL.md
 `--site` accepts a comma-separated domain list so multi-host auth (e.g.
 `chatgpt.com,openai.com`) is captured as one account. Suffix matching also
 catches subdomains.
+
+### Cross-origin testing (reuse a prod login on `localhost`)
+
+Cookies are domain-bound, so a session captured on `app.example.com` is invisible
+to a local dev server on `localhost`. `--rewrite-domain` retargets the cookie
+domains on apply, and `--with-localstorage` / auto-injection carries any SPA
+token/user state that lives in `localStorage` rather than cookies:
+
+```sh
+cookie-use add --from-profile auto --site example.com --id app/prod --with-localstorage
+cookie-use use app/prod --target session:real \
+  --rewrite-domain localhost --open-url http://localhost:8001
+```
+
+This fixes domain-binding and storage only. If the dev server points at a
+different backend/gateway than prod, that token may not be honored there — an
+environment-config matter outside cookie-use's scope.
 
 <p align="center">
   <img src="assets/profiles.png" alt="three crude browser windows each logged into a different cookie account with a SWITCH button" width="480"><br>

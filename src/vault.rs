@@ -20,6 +20,10 @@ pub struct Account {
     pub account_hint: Option<String>,
     /// Full cross-domain cookie set, CDP `Network.setCookie` shape.
     pub cookies: Vec<Value>,
+    /// Optional localStorage snapshot for the primary origin (key -> value).
+    /// Many SPAs keep token/user info here, not in cookies; captured on demand.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_storage: Option<serde_json::Map<String, Value>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

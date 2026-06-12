@@ -42,6 +42,11 @@ enum Cmd {
         label: Option<String>,
         #[arg(long)]
         hint: Option<String>,
+        /// Also capture the primary origin's localStorage (one in-browser read
+        /// via a throwaway browser). Useful for SPAs that keep token/user info
+        /// in localStorage rather than cookies.
+        #[arg(long = "with-localstorage")]
+        with_localstorage: bool,
     },
     /// Import a session from a JSON cookie array or a Cookie-header file.
     Import {
@@ -74,6 +79,18 @@ enum Cmd {
         /// Don't open the site after applying.
         #[arg(long = "no-open")]
         no_open: bool,
+        /// Rewrite cookie domains to this host on apply (e.g. "localhost"), so
+        /// the session can be reused on a different origin for local testing.
+        #[arg(long = "rewrite-domain")]
+        rewrite_domain: Option<String>,
+        /// Open this exact URL after applying instead of the account's site
+        /// (e.g. "http://localhost:8001"). Needed when rewriting to a dev host.
+        #[arg(long = "open-url")]
+        open_url: Option<String>,
+        /// Skip injecting the account's captured localStorage (injected by
+        /// default when present and a page is opened).
+        #[arg(long = "no-localstorage")]
+        no_localstorage: bool,
     },
     /// Clear the target's cookies, then apply the account (clean switch).
     Switch {
@@ -82,6 +99,12 @@ enum Cmd {
         target: String,
         #[arg(long = "no-open")]
         no_open: bool,
+        #[arg(long = "rewrite-domain")]
+        rewrite_domain: Option<String>,
+        #[arg(long = "open-url")]
+        open_url: Option<String>,
+        #[arg(long = "no-localstorage")]
+        no_localstorage: bool,
     },
     /// Update an account's liveness from its cookie expiry (generic heuristic).
     Check { id: String },
@@ -106,7 +129,8 @@ fn run() -> Result<()> {
             id,
             label,
             hint,
-        } => cmd_add(&from_profile, &site, id, label, hint),
+            with_localstorage,
+        } => cmd_add(&from_profile, &site, id, label, hint, with_localstorage),
         Cmd::Import {
             file,
             site,
@@ -120,12 +144,34 @@ fn run() -> Result<()> {
             id,
             target,
             no_open,
-        } => cmd_apply(&id, &target, !no_open, false),
+            rewrite_domain,
+            open_url,
+            no_localstorage,
+        } => cmd_apply(ApplyArgs {
+            id: &id,
+            target: &target,
+            open: !no_open,
+            clear_first: false,
+            rewrite_domain: rewrite_domain.as_deref(),
+            open_url: open_url.as_deref(),
+            inject_localstorage: !no_localstorage,
+        }),
         Cmd::Switch {
             id,
             target,
             no_open,
-        } => cmd_apply(&id, &target, !no_open, true),
+            rewrite_domain,
+            open_url,
+            no_localstorage,
+        } => cmd_apply(ApplyArgs {
+            id: &id,
+            target: &target,
+            open: !no_open,
+            clear_first: true,
+            rewrite_domain: rewrite_domain.as_deref(),
+            open_url: open_url.as_deref(),
+            inject_localstorage: !no_localstorage,
+        }),
         Cmd::Check { id } => cmd_check(&id),
         Cmd::Rm { id } => cmd_rm(&id),
         Cmd::Rename { id, new_id } => cmd_rename(&id, &new_id),
@@ -138,6 +184,7 @@ fn cmd_add(
     id: Option<String>,
     label: Option<String>,
     hint: Option<String>,
+    with_localstorage: bool,
 ) -> Result<()> {
     let cookies = chrome_use::export_from_profile(profile, site)?;
     if cookies.is_empty() {
@@ -145,9 +192,37 @@ fn cmd_add(
             "no cookies for {site} in profile \"{profile}\" — is it logged in there?"
         ));
     }
+    let local_storage = if with_localstorage {
+        let url = format!("https://{}", primary_domain(site));
+        match chrome_use::capture_local_storage(&cookies, &url) {
+            Ok(ls) if !ls.is_empty() => {
+                println!("captured {} localStorage item(s) from {url}", ls.len());
+                Some(ls)
+            }
+            Ok(_) => {
+                eprintln!("note: no localStorage found at {url}");
+                None
+            }
+            // Cookie capture already succeeded — don't fail the whole add.
+            Err(e) => {
+                eprintln!("warning: localStorage capture failed, storing cookies only: {e:#}");
+                None
+            }
+        }
+    } else {
+        None
+    };
     let mut vault = Vault::open()?;
     let id = id.unwrap_or_else(|| next_id(&vault, site));
-    store(&mut vault, id.clone(), site, cookies, label, hint)?;
+    store(
+        &mut vault,
+        id.clone(),
+        site,
+        cookies,
+        local_storage,
+        label,
+        hint,
+    )?;
     vault.save()?;
     println!("added \"{id}\" ({site}) from profile \"{profile}\"");
     Ok(())
@@ -166,7 +241,7 @@ fn cmd_import(
         return Err(anyhow!("no cookies found in {file}"));
     }
     let mut vault = Vault::open()?;
-    store(&mut vault, id.to_string(), site, cookies, label, hint)?;
+    store(&mut vault, id.to_string(), site, cookies, None, label, hint)?;
     vault.save()?;
     println!("imported \"{id}\" ({site}) from {file}");
     Ok(())
@@ -236,6 +311,12 @@ fn cmd_show(id: &str) -> Result<()> {
     }
     println!("status:      {}", a.status);
     println!("cookies:     {}", a.cookies.len());
+    if let Some(ls) = &a.local_storage {
+        // Keys only — never values (they can hold tokens).
+        let mut keys: Vec<&str> = ls.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        println!("localStorage: {} ({})", ls.len(), keys.join(", "));
+    }
     println!("created:     {}", a.created_at.to_rfc3339());
     println!("updated:     {}", a.updated_at.to_rfc3339());
     if let Some(t) = a.last_used_at {
@@ -253,31 +334,64 @@ fn cmd_show(id: &str) -> Result<()> {
     Ok(())
 }
 
-fn cmd_apply(id: &str, target: &str, open: bool, clear_first: bool) -> Result<()> {
-    let target = chrome_use::Target::parse(target)?;
+struct ApplyArgs<'a> {
+    id: &'a str,
+    target: &'a str,
+    open: bool,
+    clear_first: bool,
+    rewrite_domain: Option<&'a str>,
+    open_url: Option<&'a str>,
+    inject_localstorage: bool,
+}
+
+fn cmd_apply(args: ApplyArgs) -> Result<()> {
+    let target = chrome_use::Target::parse(args.target)?;
     let mut vault = Vault::open()?;
     let account = vault
-        .find(id)
-        .ok_or_else(|| anyhow!("no account \"{id}\""))?
+        .find(args.id)
+        .ok_or_else(|| anyhow!("no account \"{}\"", args.id))?
         .clone();
 
-    if clear_first {
+    if args.clear_first {
         chrome_use::clear(&target)?;
     }
-    let open_url = if open {
-        Some(format!("https://{}", primary_domain(&account.site)))
+
+    // Resolve which URL (if any) to open after applying. An explicit --open-url
+    // wins. When rewriting the domain we can't guess the dev host's scheme/port,
+    // so we skip auto-opening the (now-wrong) production URL and say so.
+    let open_url = match (args.open, args.open_url, args.rewrite_domain) {
+        (_, Some(url), _) => Some(url.to_string()),
+        (false, None, _) => None,
+        (true, None, Some(_)) => {
+            eprintln!(
+                "note: --rewrite-domain set without --open-url; skipping auto-open \
+                 (pass --open-url http://<host>:<port> to open the dev origin)"
+            );
+            None
+        }
+        (true, None, None) => Some(format!("https://{}", primary_domain(&account.site))),
+    };
+
+    let local_storage = if args.inject_localstorage {
+        account.local_storage.as_ref()
     } else {
         None
     };
-    chrome_use::apply(&account.cookies, &target, open_url.as_deref())?;
+    let opts = chrome_use::ApplyOpts {
+        rewrite_domain: args.rewrite_domain,
+        open_url: open_url.as_deref(),
+        local_storage,
+    };
+    chrome_use::apply(&account.cookies, &target, &opts)?;
 
-    if let Some(a) = vault.find_mut(id) {
+    if let Some(a) = vault.find_mut(args.id) {
         a.last_used_at = Some(Utc::now());
     }
     vault.save()?;
     println!(
-        "applied \"{id}\" ({})",
-        if clear_first { "switched" } else { "use" }
+        "applied \"{}\" ({})",
+        args.id,
+        if args.clear_first { "switched" } else { "use" }
     );
     Ok(())
 }
@@ -323,11 +437,13 @@ fn cmd_rename(id: &str, new_id: &str) -> Result<()> {
 
 // --- helpers ---
 
+#[allow(clippy::too_many_arguments)]
 fn store(
     vault: &mut Vault,
     id: String,
     site: &str,
     cookies: Vec<Value>,
+    local_storage: Option<serde_json::Map<String, Value>>,
     label: Option<String>,
     hint: Option<String>,
 ) -> Result<()> {
@@ -340,6 +456,7 @@ fn store(
         label,
         account_hint: hint,
         cookies,
+        local_storage,
         created_at,
         updated_at: now,
         last_used_at: None,

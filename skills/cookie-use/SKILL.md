@@ -50,6 +50,9 @@ plaintext, and `list`/`show` never print them.
 # Capture a logged-in session from a Chrome profile (any site).
 cookie-use add --from-profile "<profile>" --site "<domain[,domain]>" [--id <id>] [--label <l>]
 #   <profile> = directory name ("Profile 14"), display name ("Davian"), or "auto".
+#   --with-localstorage  also snapshot the primary origin's localStorage
+#                        (one in-browser read; for SPAs that keep token/user
+#                        info in localStorage, not cookies).
 
 # Import from a JSON cookie array or a bare "name=value; ..." Cookie header.
 cookie-use import --file <path> --site <domain> --id <id>
@@ -64,6 +67,12 @@ cookie-use use <id> --target session:<name>     # inject into a connected chrome
 cookie-use use <id> --target isolated           # spin up a throwaway browser with this account
 cookie-use switch <id> --target session:<name>  # clear the site's cookies, then apply
 #   add --no-open to skip opening the site after applying.
+#   --rewrite-domain <host>   rewrite cookie domains on apply (e.g. "localhost")
+#                             so a prod/test session works on a different origin.
+#   --open-url <url>          open this exact URL afterwards (e.g. a dev server's
+#                             "http://localhost:8001"); pair with --rewrite-domain.
+#   --no-localstorage         skip injecting the account's captured localStorage
+#                             (injected by default when present and a page opens).
 
 # Manage.
 cookie-use rename <id> <new-id>
@@ -97,6 +106,24 @@ Apply an account into the user's real Chrome (drive their live browser):
 chrome-use extension connect                 # connect a session to the real Chrome
 cookie-use use claude/davian --target session:default
 ```
+
+Reuse a production/test login on a local dev server (cross-origin testing). The
+cookies are domain-bound to the prod host, so `localhost` can't see them — rewrite
+the domain (and bring the localStorage too if the SPA needs it):
+
+```bash
+# capture the prod session incl. localStorage (token/user info often lives there)
+cookie-use add --from-profile auto --site "example.com" --id app/prod --with-localstorage
+
+# replay it onto the local dev origin
+cookie-use use app/prod --target session:real \
+  --rewrite-domain localhost \
+  --open-url http://localhost:8001
+```
+
+Note: this only fixes domain-binding and storage. If the dev server talks to a
+different backend/gateway than prod, the token may not be honored there — that's
+an environment-config issue, not something cookie-use can bridge.
 
 ## Notes
 

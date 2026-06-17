@@ -97,6 +97,36 @@ non-interactive shell without a bypass.
 `chatgpt.com,openai.com`) is captured as one account. Suffix matching also
 catches subdomains.
 
+### In action
+
+Switch between accounts in your real browser — no re-login:
+
+```sh
+chrome-use extension connect                          # connect a session to your Chrome
+cookie-use switch cloudflare/work --target session:default   # Touch ID, then you're that account
+cookie-use switch cloudflare/personal --target session:default
+```
+
+Run many accounts of one site side by side, each in its own isolated window:
+
+```sh
+cookie-use run --site chatgpt.com --all
+```
+
+Let an agent act as a specific account for one task (headless-friendly):
+
+```sh
+COOKIE_USE_YES=1 cookie-use as chatgpt/seat-07 --target session:agent -- \
+  chrome-use open https://chatgpt.com
+```
+
+Hand a login to a teammate as an encrypted bundle (they must install cookie-use to redeem):
+
+```sh
+cookie-use share chatgpt/seat-07 --out seat.cusession   # prompts for a password
+cookie-use redeem seat.cusession --id chatgpt/seat-07   # on their machine
+```
+
 ### Cross-origin testing (reuse a prod login on `localhost`)
 
 Cookies are domain-bound, so a session captured on `app.example.com` is invisible
@@ -129,6 +159,9 @@ environment-config matter outside cookie-use's scope.
 - Master key: generated on first run, stored in the macOS Keychain
   (service `cookie-use`, account `vault-key`). Cookie values never touch disk in plaintext.
 - `show` / `list` never print secret values; errors never echo them.
+- Headless / CI / agent hosts: set `COOKIE_USE_VAULT_KEY` (base64 of 32 bytes) to
+  supply the key directly and skip the Keychain, and `COOKIE_USE_VAULT` to point
+  at an alternate vault file.
 
 ## Roadmap
 

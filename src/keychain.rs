@@ -11,7 +11,21 @@ const SERVICE: &str = "cookie-use";
 const ACCOUNT: &str = "vault-key";
 
 /// Return the vault key, creating and persisting one on first use.
+///
+/// If `COOKIE_USE_VAULT_KEY` is set (base64 of exactly 32 bytes), that key is
+/// used directly and the Keychain is bypassed entirely. This is for headless /
+/// CI / agent hosts where no login Keychain is available — the caller owns key
+/// custody in that mode. Without it, the key lives in the macOS login Keychain.
 pub fn get_or_create_key() -> Result<[u8; 32]> {
+    if let Ok(b64) = std::env::var("COOKIE_USE_VAULT_KEY") {
+        let bytes = B64
+            .decode(b64.trim())
+            .context("decoding COOKIE_USE_VAULT_KEY")?;
+        return bytes
+            .as_slice()
+            .try_into()
+            .map_err(|_| anyhow!("COOKIE_USE_VAULT_KEY must be base64 of exactly 32 bytes"));
+    }
     if let Some(k) = get_key()? {
         return Ok(k);
     }

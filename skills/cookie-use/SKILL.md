@@ -109,6 +109,16 @@ must either pass `--no-confirm` or set `COOKIE_USE_YES=1`; without a bypass,
 injection is *refused* in a non-interactive shell rather than proceeding
 silently.
 
+## Environment variables
+
+- `COOKIE_USE_YES=1` — bypass the injection confirmation (agent / automation).
+- `COOKIE_USE_VAULT_KEY` — base64 of a 32-byte key; used directly instead of the
+  macOS Keychain. For headless / CI / agent hosts with no login Keychain (the
+  caller owns key custody). Without it, the key lives in the Keychain.
+- `COOKIE_USE_VAULT` — override the vault file path (multiple isolated vaults,
+  headless hosts, tests). Defaults to `~/.cookie-use/vault.enc`.
+- `CHROME_USE_BIN` — path to the `chrome-use` binary if not on `PATH`.
+
 ## Targets
 
 - `session:<name>` (default `session:default`) — an existing chrome-use session.

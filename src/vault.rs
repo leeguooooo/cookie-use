@@ -141,6 +141,11 @@ impl Vault {
 }
 
 fn vault_path() -> Result<PathBuf> {
+    // `COOKIE_USE_VAULT` overrides the vault file location (headless hosts,
+    // multiple isolated vaults, and isolated integration tests).
+    if let Some(p) = std::env::var_os("COOKIE_USE_VAULT") {
+        return Ok(PathBuf::from(p));
+    }
     let home = dirs::home_dir().ok_or_else(|| anyhow!("could not find home directory"))?;
     Ok(home.join(".cookie-use").join("vault.enc"))
 }

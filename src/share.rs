@@ -24,13 +24,13 @@
 //! A fresh random 16-byte salt is generated per `share` invocation.
 //! The same password + salt combination is used for `redeem`.
 
+use crate::vault::{Account, Vault};
 use anyhow::{anyhow, bail, Context, Result};
 use argon2::{Argon2, Params};
 use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 use chrono::Utc;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
-use crate::vault::{Account, Vault};
 
 // ---------------------------------------------------------------------------
 // Bundle wire type
@@ -59,8 +59,7 @@ struct Bundle {
 /// brute-force attacker while staying under ~1 s on a laptop.
 fn derive_key(password: &str, salt: &[u8]) -> Result<[u8; 32]> {
     // m_cost in kibibytes, t_cost = iterations, p_cost = parallelism
-    let params = Params::new(65536, 3, 1, Some(32))
-        .map_err(|e| anyhow!("argon2 params: {e}"))?;
+    let params = Params::new(65536, 3, 1, Some(32)).map_err(|e| anyhow!("argon2 params: {e}"))?;
     let argon2 = Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params);
     let mut key = [0u8; 32];
     argon2
@@ -102,8 +101,8 @@ pub fn seal(account: &Account, password: &str) -> Result<Vec<u8>> {
 /// Returns a descriptive error on wrong password, corrupt data, or an
 /// unrecognised bundle version.
 pub fn unseal(bundle_bytes: &[u8], password: &str) -> Result<Account> {
-    let bundle: Bundle =
-        serde_json::from_slice(bundle_bytes).context("parsing bundle JSON — is this a .cusession file?")?;
+    let bundle: Bundle = serde_json::from_slice(bundle_bytes)
+        .context("parsing bundle JSON — is this a .cusession file?")?;
 
     if bundle.cookie_use_bundle != 1 {
         bail!(
@@ -115,9 +114,7 @@ pub fn unseal(bundle_bytes: &[u8], password: &str) -> Result<Account> {
         bail!("unsupported KDF \"{}\" in bundle", bundle.kdf);
     }
 
-    let salt = B64
-        .decode(&bundle.salt)
-        .context("decoding bundle salt")?;
+    let salt = B64.decode(&bundle.salt).context("decoding bundle salt")?;
     let encrypted = B64
         .decode(&bundle.ciphertext)
         .context("decoding bundle ciphertext")?;
@@ -142,7 +139,13 @@ pub fn unseal(bundle_bytes: &[u8], password: &str) -> Result<Account> {
 /// Replaces `/` and any non-alphanumeric character with `-`.
 fn id_to_slug(id: &str) -> String {
     id.chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
         .collect()
 }
 
@@ -159,8 +162,7 @@ fn require_password(password: Option<&str>, prompt: &str) -> Result<String> {
     }
     // Check if stdin is a terminal.
     if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
-        let pw = rpassword::prompt_password(prompt)
-            .context("reading password from terminal")?;
+        let pw = rpassword::prompt_password(prompt).context("reading password from terminal")?;
         if pw.is_empty() {
             bail!("password must not be empty");
         }
@@ -180,12 +182,7 @@ fn require_password(password: Option<&str>, prompt: &str) -> Result<String> {
 /// Writes `<slug>.cusession` (or the path given via `out`) and prints the
 /// path plus a one-line redeem hint so the recipient knows exactly what to
 /// run.
-pub fn cmd_share(
-    vault: &Vault,
-    id: &str,
-    out: Option<&str>,
-    password: Option<&str>,
-) -> Result<()> {
+pub fn cmd_share(vault: &Vault, id: &str, out: Option<&str>, password: Option<&str>) -> Result<()> {
     let account = vault
         .find(id)
         .ok_or_else(|| anyhow!("no account \"{id}\""))?;
@@ -199,8 +196,7 @@ pub fn cmd_share(
         None => format!("{}.cusession", id_to_slug(id)),
     };
 
-    std::fs::write(&path, &bundle_bytes)
-        .with_context(|| format!("writing bundle to {path}"))?;
+    std::fs::write(&path, &bundle_bytes).with_context(|| format!("writing bundle to {path}"))?;
 
     println!("{path}");
     println!("redeem with: cookie-use redeem {path}");
@@ -217,8 +213,8 @@ pub fn cmd_redeem(
     password: Option<&str>,
     new_id: Option<&str>,
 ) -> Result<()> {
-    let bundle_bytes = std::fs::read(bundle_path)
-        .with_context(|| format!("reading bundle {bundle_path}"))?;
+    let bundle_bytes =
+        std::fs::read(bundle_path).with_context(|| format!("reading bundle {bundle_path}"))?;
 
     // Sniff-check before asking for the password.
     let _pre: serde_json::Value = serde_json::from_slice(&bundle_bytes)

@@ -122,9 +122,7 @@ pub(crate) fn select<'a>(
         return Ok(out);
     }
 
-    Err(anyhow!(
-        "specify an account id, --site <domain>, or --all"
-    ))
+    Err(anyhow!("specify an account id, --site <domain>, or --all"))
 }
 
 /// Build an isolated-session name from an account id.
@@ -256,10 +254,7 @@ mod tests {
     fn select_no_criteria_errors() {
         let accs = accounts();
         let err = select(&accs, None, None, false).unwrap_err();
-        assert!(
-            err.to_string().contains("specify an account id"),
-            "{err}"
-        );
+        assert!(err.to_string().contains("specify an account id"), "{err}");
     }
 
     #[test]
@@ -318,7 +313,10 @@ mod tests {
 
     #[test]
     fn open_url_whitespace_trimmed() {
-        assert_eq!(open_url_for("  github.com , example.com"), "https://github.com");
+        assert_eq!(
+            open_url_for("  github.com , example.com"),
+            "https://github.com"
+        );
     }
 
     // ------------------------------------------------------------------

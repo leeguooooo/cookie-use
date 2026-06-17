@@ -583,7 +583,9 @@ fn cmd_replay(id: &str, to: &str, target: &str, confirm: bool) -> Result<()> {
         .trim_end_matches('/');
     let host = stripped.split(':').next().unwrap_or(stripped).to_string();
     if host.is_empty() {
-        return Err(anyhow!("invalid --to \"{to}\" (expected host[:port] or URL)"));
+        return Err(anyhow!(
+            "invalid --to \"{to}\" (expected host[:port] or URL)"
+        ));
     }
     let open_url = if to.starts_with("http://") || to.starts_with("https://") {
         to.to_string()

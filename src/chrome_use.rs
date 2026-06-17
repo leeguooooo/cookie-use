@@ -124,6 +124,25 @@ pub fn apply(cookies: &[Value], target: &Target, opts: &ApplyOpts) -> Result<()>
     Ok(())
 }
 
+/// Launch a fresh isolated browser under an explicit session name and apply
+/// `cookies`, opening `open_url`. Unlike `Target::Isolated` (one fixed session),
+/// this lets callers run several isolated accounts side by side — each a
+/// distinct, named throwaway session. Used by `run --all`.
+pub fn apply_isolated_named(
+    cookies: &[Value],
+    session: &str,
+    open_url: &str,
+    local_storage: Option<&Map<String, Value>>,
+) -> Result<()> {
+    run(&["--session", session, "--launch", "open", "about:blank"])?;
+    let opts = ApplyOpts {
+        rewrite_domain: None,
+        open_url: Some(open_url),
+        local_storage,
+    };
+    apply(cookies, &Target::Session(session.to_string()), &opts)
+}
+
 /// Clear a site's cookies in a session target (used by `switch`).
 pub fn clear(target: &Target) -> Result<()> {
     if let Target::Session(session) = target {

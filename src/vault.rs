@@ -117,6 +117,14 @@ impl Vault {
         Ok(())
     }
 
+    /// Delete the on-disk vault file entirely. Used by `wipe`.
+    pub fn delete_file(&self) -> Result<()> {
+        if self.path.exists() {
+            std::fs::remove_file(&self.path).context("deleting vault file")?;
+        }
+        Ok(())
+    }
+
     pub fn save(&self) -> Result<()> {
         if let Some(dir) = self.path.parent() {
             std::fs::create_dir_all(dir).context("creating ~/.cookie-use")?;

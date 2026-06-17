@@ -65,7 +65,7 @@ npx skills add leeguooooo/cookie-use
 
 See <https://www.skills.sh/docs>. The skill lives at `skills/cookie-use/SKILL.md`.
 
-## Commands (v0.1 MVP)
+## Commands
 
 <p align="center">
   <img src="assets/switch.png" alt="a cursor flinging a cookie into a browser window logged in as dumb_user_1" width="320">
@@ -80,7 +80,18 @@ See <https://www.skills.sh/docs>. The skill lives at `skills/cookie-use/SKILL.md
 | `cookie-use use <id> [--target session:<s>\|isolated] [--rewrite-domain <host>] [--open-url <url>]` | Apply an account into a browser target |
 | `cookie-use switch <id> --target <…>` | Clear the site's cookies in the target, then apply (clean switch) |
 | `cookie-use check <id>` | Liveness from cookie expiry (generic; site probes are pluggable later) |
-| `cookie-use rm <id>` / `rename <id> <new>` | Manage entries |
+| `cookie-use replay <id> --to localhost:8001` | Cross-origin QA sugar: rewrite domain + open the dev origin in one command |
+| `cookie-use run <id> \| --site <d> --all \| --all` | Open one or many accounts in **side-by-side isolated windows** at once |
+| `cookie-use as <id> --target <…> -- <cmd>` | Run `<cmd>` in a session-scoped env (`COOKIE_USE_*`, `CHROME_USE_SESSION`) — an agent acts **as** that account |
+| `cookie-use share <id> [--out <f>] [--password <pw>]` | Export a **password-encrypted** `.cusession` bundle (argon2id + AES-256-GCM) |
+| `cookie-use redeem <f> [--password <pw>] [--id <new>]` | Import a shared bundle (installing cookie-use is the cost of redeeming) |
+| `cookie-use rm <id>` / `revoke <id>` / `rename <id> <new>` | Manage entries |
+| `cookie-use wipe [--yes]` | Delete the entire vault |
+
+Injecting a live session (`use` / `switch` / `replay` / `as`) is gated by
+**Touch ID** (falling back to a TTY prompt); agents pass `--no-confirm` or set
+`COOKIE_USE_YES=1`, and injection is refused — never silent — in a
+non-interactive shell without a bypass.
 
 `--site` accepts a comma-separated domain list so multi-host auth (e.g.
 `chatgpt.com,openai.com`) is captured as one account. Suffix matching also
@@ -119,12 +130,17 @@ environment-config matter outside cookie-use's scope.
   (service `cookie-use`, account `vault-key`). Cookie values never touch disk in plaintext.
 - `show` / `list` never print secret values; errors never echo them.
 
-## Roadmap (post-MVP)
+## Roadmap
+
+Shipped: `run` (side-by-side isolated windows), `as` (act as an account for a
+command), `share` / `redeem` (encrypted session bundles), Touch ID injection gate.
+
+Next:
 
 1. Interactive capture: `capture` (log in once → snapshot) and `grab` (pull the
    current account out of a running browser via the chrome-use extension).
-2. `run --site <d> --all -- <cmd>`: concurrent orchestration over isolated
-   contexts (operate dozens of accounts in parallel).
+2. `run … -- <cmd>`: fan a command across every isolated context concurrently
+   (operate dozens of accounts in parallel), building on today's `run`.
 3. Generalized headless / direct-API backend.
 4. MCP server wrapping the same core for agents.
 5. Anti-correlation: per-account proxy + fingerprint binding (the vault already

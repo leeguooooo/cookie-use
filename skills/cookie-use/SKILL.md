@@ -73,11 +73,41 @@ cookie-use switch <id> --target session:<name>  # clear the site's cookies, then
 #                             "http://localhost:8001"); pair with --rewrite-domain.
 #   --no-localstorage         skip injecting the account's captured localStorage
 #                             (injected by default when present and a page opens).
+#   --no-confirm              skip the Touch ID / TTY gate before injecting.
+
+# Cross-origin QA sugar: replay a captured session onto a local dev origin.
+cookie-use replay <id> --to localhost:8001    # = use --rewrite-domain localhost
+#                                               --open-url http://localhost:8001
+
+# Open many accounts at once, each in its own isolated window (side by side).
+cookie-use run <id>                            # one account, isolated
+cookie-use run --site chatgpt.com --all        # every chatgpt account, side by side
+cookie-use run --all                           # the whole vault
+
+# Agent identity: run a command in an environment scoped to an account's session.
+# Sets COOKIE_USE_ACCOUNT / _SITE / _TARGET and CHROME_USE_SESSION for the child,
+# so an agent (or any chrome-use call) acts AS that account for one task.
+cookie-use as <id> --target session:work -- chrome-use open https://dash.cloudflare.com
+
+# Share a session with a teammate as a password-encrypted bundle (viral loop:
+# redeeming requires installing cookie-use). Never writes plaintext cookies.
+cookie-use share <id> [--out <path.cusession>] [--password <pw>]
+cookie-use redeem <path.cusession> [--password <pw>] [--id <new-id>]
 
 # Manage.
 cookie-use rename <id> <new-id>
-cookie-use rm <id>
+cookie-use rm <id>                             # (alias: revoke <id>)
+cookie-use wipe [--yes]                        # delete the ENTIRE vault
 ```
+
+## Confirmation gate (Touch ID)
+
+Injecting a live session is the dangerous action, so `use` / `switch` / `replay`
+/ `as` confirm before they inject: **Touch ID** on macOS (LocalAuthentication),
+falling back to a TTY y/N prompt. An agent driving the CLI non-interactively
+must either pass `--no-confirm` or set `COOKIE_USE_YES=1`; without a bypass,
+injection is *refused* in a non-interactive shell rather than proceeding
+silently.
 
 ## Targets
 
@@ -125,10 +155,29 @@ Note: this only fixes domain-binding and storage. If the dev server talks to a
 different backend/gateway than prod, the token may not be honored there — that's
 an environment-config issue, not something cookie-use can bridge.
 
+Hand a session to a teammate (and pull it into your own vault):
+
+```bash
+cookie-use share chatgpt/team-seat --out seat.cusession   # prompts for a password
+# teammate runs (installs cookie-use if missing, then imports):
+cookie-use redeem seat.cusession --id chatgpt/team-seat
+```
+
+Let an agent act as a specific account for one task, several accounts at once:
+
+```bash
+cookie-use run --site chatgpt.com --all                   # open every seat side by side
+COOKIE_USE_YES=1 cookie-use as chatgpt/seat-07 --target session:agent -- \
+  chrome-use open https://chatgpt.com                     # agent now acts as seat-07
+```
+
 ## Notes
 
 - Reserved per-account `proxy` / `fingerprint` fields exist for future
   anti-correlation; not applied yet.
+- `share` bundles are `argon2id` + AES-256-GCM, encrypted with the chosen
+  password — the only artifact that leaves the machine, and only when you run
+  `share`. The vault itself is always local-only.
 - `check` is a generic expiry heuristic (no per-site probes yet) — it can't tell
   a server-revoked session from a live one, only an expired cookie set.
 - Repo & issues: <https://github.com/leeguooooo/cookie-use>

@@ -1,6 +1,6 @@
 [package]
 name = "cookie-use"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Agent-friendly multi-account session manager — capture, store, and apply logged-in sessions for any website, across browsers and profiles."
 license = "Apache-2.0"
@@ -24,6 +24,9 @@ base64 = "0.22"
 dirs = "5"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 anyhow = "1"
+# `share` / `redeem`: password-derived key (argon2id) + no-echo password prompt.
+argon2 = "0.5"
+rpassword = "7"
 
 [profile.release]
 opt-level = 3

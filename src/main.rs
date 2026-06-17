@@ -3,9 +3,13 @@
 //! Sits on top of `chrome-use`: owns the account model, an encrypted vault, and
 //! orchestration; delegates all browser/cookie I/O to chrome-use. Site-agnostic.
 
+mod act_as;
 mod chrome_use;
+mod confirm;
 mod crypto;
 mod keychain;
+mod runner;
+mod share;
 mod vault;
 
 use anyhow::{anyhow, Context, Result};
@@ -91,6 +95,9 @@ enum Cmd {
         /// default when present and a page is opened).
         #[arg(long = "no-localstorage")]
         no_localstorage: bool,
+        /// Skip the biometric/TTY confirmation before injecting the session.
+        #[arg(long = "no-confirm")]
+        no_confirm: bool,
     },
     /// Clear the target's cookies, then apply the account (clean switch).
     Switch {
@@ -105,6 +112,73 @@ enum Cmd {
         open_url: Option<String>,
         #[arg(long = "no-localstorage")]
         no_localstorage: bool,
+        /// Skip the biometric/TTY confirmation before injecting the session.
+        #[arg(long = "no-confirm")]
+        no_confirm: bool,
+    },
+    /// Replay a session onto a local dev origin for cross-origin QA testing.
+    /// Sugar over `use --rewrite-domain <host> --open-url http://<host:port>`.
+    Replay {
+        id: String,
+        /// Dev origin to replay onto, e.g. "localhost:8001" or "127.0.0.1:3000".
+        #[arg(long = "to")]
+        to: String,
+        #[arg(long, default_value = "session:default")]
+        target: String,
+        #[arg(long = "no-confirm")]
+        no_confirm: bool,
+    },
+    /// Export a password-encrypted session bundle to hand to a teammate.
+    /// They redeem it with `cookie-use redeem` (which installs cookie-use).
+    Share {
+        id: String,
+        /// Output bundle path (default: "<id-slug>.cusession").
+        #[arg(long)]
+        out: Option<String>,
+        /// Bundle password. Prompted on the TTY if omitted.
+        #[arg(long)]
+        password: Option<String>,
+    },
+    /// Import a session bundle produced by `share` into the vault.
+    Redeem {
+        /// Path to a .cusession bundle.
+        bundle: String,
+        #[arg(long)]
+        password: Option<String>,
+        /// Store under this id instead of the bundle's original id.
+        #[arg(long)]
+        id: Option<String>,
+    },
+    /// Open one or more accounts in isolated browser windows simultaneously.
+    Run {
+        /// A single account id. Omit and pass --site/--all for many.
+        id: Option<String>,
+        /// Open every account whose site matches this filter.
+        #[arg(long)]
+        site: Option<String>,
+        /// Open every account in the vault (optionally narrowed by --site).
+        #[arg(long)]
+        all: bool,
+    },
+    /// Run a command in an environment scoped to an account's session
+    /// (agent-friendly: lets an agent act as a specific account per task).
+    As {
+        id: String,
+        #[arg(long, default_value = "session:default")]
+        target: String,
+        #[arg(long = "no-confirm")]
+        no_confirm: bool,
+        /// The command to run after the session is applied (after `--`).
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        command: Vec<String>,
+    },
+    /// Delete a single account from the vault.
+    Revoke { id: String },
+    /// Delete the entire vault (all accounts). Irreversible.
+    Wipe {
+        /// Skip the confirmation prompt.
+        #[arg(long)]
+        yes: bool,
     },
     /// Update an account's liveness from its cookie expiry (generic heuristic).
     Check { id: String },
@@ -147,6 +221,7 @@ fn run() -> Result<()> {
             rewrite_domain,
             open_url,
             no_localstorage,
+            no_confirm,
         } => cmd_apply(ApplyArgs {
             id: &id,
             target: &target,
@@ -155,6 +230,7 @@ fn run() -> Result<()> {
             rewrite_domain: rewrite_domain.as_deref(),
             open_url: open_url.as_deref(),
             inject_localstorage: !no_localstorage,
+            confirm: !no_confirm,
         }),
         Cmd::Switch {
             id,
@@ -163,6 +239,7 @@ fn run() -> Result<()> {
             rewrite_domain,
             open_url,
             no_localstorage,
+            no_confirm,
         } => cmd_apply(ApplyArgs {
             id: &id,
             target: &target,
@@ -171,9 +248,42 @@ fn run() -> Result<()> {
             rewrite_domain: rewrite_domain.as_deref(),
             open_url: open_url.as_deref(),
             inject_localstorage: !no_localstorage,
+            confirm: !no_confirm,
         }),
+        Cmd::Replay {
+            id,
+            to,
+            target,
+            no_confirm,
+        } => cmd_replay(&id, &to, &target, !no_confirm),
+        Cmd::Share { id, out, password } => {
+            share::cmd_share(&Vault::open()?, &id, out.as_deref(), password.as_deref())
+        }
+        Cmd::Redeem {
+            bundle,
+            password,
+            id,
+        } => {
+            let mut vault = Vault::open()?;
+            share::cmd_redeem(&mut vault, &bundle, password.as_deref(), id.as_deref())
+        }
+        Cmd::Run { id, site, all } => {
+            let mut vault = Vault::open()?;
+            runner::cmd_run(&mut vault, id.as_deref(), site.as_deref(), all)
+        }
+        Cmd::As {
+            id,
+            target,
+            no_confirm,
+            command,
+        } => {
+            let mut vault = Vault::open()?;
+            act_as::cmd_as(&mut vault, &id, &target, &command, !no_confirm)
+        }
         Cmd::Check { id } => cmd_check(&id),
         Cmd::Rm { id } => cmd_rm(&id),
+        Cmd::Revoke { id } => cmd_rm(&id),
+        Cmd::Wipe { yes } => cmd_wipe(yes),
         Cmd::Rename { id, new_id } => cmd_rename(&id, &new_id),
     }
 }
@@ -331,7 +441,27 @@ fn cmd_show(id: &str) -> Result<()> {
     domains.sort();
     domains.dedup();
     println!("domains:     {}", domains.join(", "));
+    // Soonest cookie expiry, so the user can see how fresh the session is.
+    if let Some(exp) = soonest_expiry(&a.cookies) {
+        if let Some(dt) = chrono::DateTime::from_timestamp(exp, 0) {
+            println!("expires:     {} (soonest cookie)", dt.to_rfc3339());
+        }
+    } else {
+        println!("expires:     session cookies only (no fixed expiry)");
+    }
+    // Trust posture, stated plainly: nothing leaves the machine.
+    println!("storage:     local-only, AES-256-GCM (~/.cookie-use/vault.enc)");
     Ok(())
+}
+
+/// Earliest positive cookie expiry (unix seconds), if any cookie carries one.
+fn soonest_expiry(cookies: &[Value]) -> Option<i64> {
+    cookies
+        .iter()
+        .filter_map(|c| c.get("expires").and_then(|e| e.as_f64()))
+        .filter(|e| *e > 0.0)
+        .map(|e| e as i64)
+        .min()
 }
 
 struct ApplyArgs<'a> {
@@ -342,6 +472,8 @@ struct ApplyArgs<'a> {
     rewrite_domain: Option<&'a str>,
     open_url: Option<&'a str>,
     inject_localstorage: bool,
+    /// Require a biometric/TTY confirmation before injecting the session.
+    confirm: bool,
 }
 
 fn cmd_apply(args: ApplyArgs) -> Result<()> {
@@ -351,6 +483,11 @@ fn cmd_apply(args: ApplyArgs) -> Result<()> {
         .find(args.id)
         .ok_or_else(|| anyhow!("no account \"{}\"", args.id))?
         .clone();
+
+    // The dangerous action is injecting a live session — gate it, not vault read.
+    if args.confirm {
+        confirm::require(&format!("apply session \"{}\"", args.id), false)?;
+    }
 
     if args.clear_first {
         chrome_use::clear(&target)?;
@@ -432,6 +569,50 @@ fn cmd_rename(id: &str, new_id: &str) -> Result<()> {
     a.updated_at = Utc::now();
     vault.save()?;
     println!("renamed \"{id}\" -> \"{new_id}\"");
+    Ok(())
+}
+
+/// QA cross-origin sugar: replay a captured session onto a local dev origin.
+/// Equivalent to `use --rewrite-domain <host> --open-url http://<host:port>`,
+/// so a prod login can be exercised against localhost in one obvious command.
+fn cmd_replay(id: &str, to: &str, target: &str, confirm: bool) -> Result<()> {
+    // `to` may be "localhost:8001", "127.0.0.1:3000", or a full http(s) URL.
+    let stripped = to
+        .trim_start_matches("http://")
+        .trim_start_matches("https://")
+        .trim_end_matches('/');
+    let host = stripped.split(':').next().unwrap_or(stripped).to_string();
+    if host.is_empty() {
+        return Err(anyhow!(
+            "invalid --to \"{to}\" (expected host[:port] or URL)"
+        ));
+    }
+    let open_url = if to.starts_with("http://") || to.starts_with("https://") {
+        to.to_string()
+    } else {
+        format!("http://{stripped}")
+    };
+    cmd_apply(ApplyArgs {
+        id,
+        target,
+        open: true,
+        clear_first: false,
+        rewrite_domain: Some(&host),
+        open_url: Some(&open_url),
+        inject_localstorage: true,
+        confirm,
+    })
+}
+
+/// Delete the entire vault. Destructive; confirms unless `--yes`.
+fn cmd_wipe(yes: bool) -> Result<()> {
+    let vault = Vault::open()?;
+    let n = vault.accounts().len();
+    if !yes {
+        confirm::confirm_tty(&format!("delete the ENTIRE vault ({n} account(s))"))?;
+    }
+    vault.delete_file()?;
+    println!("wiped vault ({n} account(s) removed)");
     Ok(())
 }
 

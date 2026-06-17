@@ -7,7 +7,6 @@
 //! * [`confirm_tty`] — plain destructive-action prompt over stdin/stderr.
 
 use std::env;
-use std::fs;
 use std::io::{self, BufRead, IsTerminal, Write};
 use std::process::Command;
 
@@ -129,8 +128,9 @@ enum TouchIdResult {
 
 /// Shells out to a tiny Swift program that calls `LAContext.evaluatePolicy`.
 ///
-/// Writes the Swift source to a temp file, runs `swift <file>`, reads stdout
-/// for "OK" / "FAIL", and cleans up the temp file regardless of outcome.
+/// The source is piped to `swift -` over stdin (never written to disk), so
+/// there is no temp file to symlink-clobber or swap between write and exec.
+/// Reads stdout for "OK" / "FAIL".
 fn try_touch_id(reason: &str) -> TouchIdResult {
     // Escape the reason string for embedding in Swift source.
     let safe_reason = reason.replace('\\', "\\\\").replace('"', "\\\"");
@@ -164,26 +164,34 @@ if success {{
 "#
     );
 
-    // Write to a temp file.
-    let tmp_path = env::temp_dir().join(format!("cookie_use_touchid_{}.swift", std::process::id()));
-    if fs::write(&tmp_path, &swift_src).is_err() {
-        return TouchIdResult::Unavailable;
-    }
-
-    let outcome = run_swift(&tmp_path.to_string_lossy());
-
-    // Clean up — best effort.
-    let _ = fs::remove_file(&tmp_path);
-
-    outcome
+    run_swift(&swift_src)
 }
 
-fn run_swift(path: &str) -> TouchIdResult {
-    let result = Command::new("swift").arg(path).output();
+/// Run `swift -`, feeding the program over stdin and reading "OK"/"FAIL" back.
+fn run_swift(src: &str) -> TouchIdResult {
+    use std::process::Stdio;
 
-    let output = match result {
-        Ok(o) => o,
+    let mut child = match Command::new("swift")
+        .arg("-")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        Ok(c) => c,
         Err(_) => return TouchIdResult::Unavailable, // swift not found / spawn error
+    };
+
+    // Write the source, then close stdin so `swift -` starts executing.
+    if let Some(mut stdin) = child.stdin.take() {
+        if stdin.write_all(src.as_bytes()).is_err() {
+            return TouchIdResult::Unavailable;
+        }
+    }
+
+    let output = match child.wait_with_output() {
+        Ok(o) => o,
+        Err(_) => return TouchIdResult::Unavailable,
     };
 
     let stdout = String::from_utf8_lossy(&output.stdout);

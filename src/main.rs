@@ -168,8 +168,10 @@ enum Cmd {
         target: String,
         #[arg(long = "no-confirm")]
         no_confirm: bool,
-        /// The command to run after the session is applied (after `--`).
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        /// The command to run after the session is applied. Must follow `--`;
+        /// everything past `--` is captured verbatim (hyphenated flags included),
+        /// while cookie-use's own flags stay parseable before it.
+        #[arg(last = true)]
         command: Vec<String>,
     },
     /// Delete a single account from the vault.
@@ -278,7 +280,7 @@ fn run() -> Result<()> {
             command,
         } => {
             let mut vault = Vault::open()?;
-            act_as::cmd_as(&mut vault, &id, &target, &command, !no_confirm)
+            act_as::cmd_as(&mut vault, &id, &target, &command, no_confirm)
         }
         Cmd::Check { id } => cmd_check(&id),
         Cmd::Rm { id } => cmd_rm(&id),

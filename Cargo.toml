@@ -27,6 +27,7 @@ anyhow = "1"
 # `share` / `redeem`: password-derived key (argon2id) + no-echo password prompt.
 argon2 = "0.5"
 rpassword = "7"
+regex = "1"
 
 [profile.release]
 opt-level = 3

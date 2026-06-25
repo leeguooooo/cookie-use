@@ -2,6 +2,11 @@
 
 All notable changes to cookie-use are documented here. Versions follow semver.
 
+## [Unreleased]
+
+### Added
+- `gogs-pr` creates Gogs pull requests from one source branch to one or more target branches by driving the Gogs compare form through `chrome-use`.
+
 ## [0.2.1] - 2026-06-17
 
 ### Security

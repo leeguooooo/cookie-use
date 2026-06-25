@@ -83,6 +83,7 @@ See <https://www.skills.sh/docs>. The skill lives at `skills/cookie-use/SKILL.md
 | `cookie-use replay <id> --to localhost:8001` | Cross-origin QA sugar: rewrite domain + open the dev origin in one command |
 | `cookie-use run <id> \| --site <d> --all \| --all` | Open one or many accounts in **side-by-side isolated windows** at once |
 | `cookie-use as <id> --target <…> -- <cmd>` | Run `<cmd>` in a session-scoped env (`COOKIE_USE_*`, `CHROME_USE_SESSION`) — an agent acts **as** that account |
+| `cookie-use gogs-pr --repo <url> --from <branch> --to <branch[,branch]> --title <s> [--body <s>]` | Create Gogs pull requests from one source branch to one or more targets via `chrome-use` |
 | `cookie-use share <id> [--out <f>] [--password <pw>]` | Export a **password-encrypted** `.cusession` bundle (argon2id + AES-256-GCM) |
 | `cookie-use redeem <f> [--password <pw>] [--id <new>]` | Import a shared bundle (installing cookie-use is the cost of redeeming) |
 | `cookie-use rm <id>` / `revoke <id>` / `rename <id> <new>` | Manage entries |

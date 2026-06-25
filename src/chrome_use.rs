@@ -6,7 +6,7 @@ use serde_json::{json, Map, Value};
 use std::io::Write;
 use std::process::Command;
 
-fn bin() -> String {
+pub(crate) fn bin() -> String {
     std::env::var("CHROME_USE_BIN").unwrap_or_else(|_| "chrome-use".to_string())
 }
 

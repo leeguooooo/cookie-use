@@ -7,6 +7,7 @@ mod act_as;
 mod chrome_use;
 mod confirm;
 mod crypto;
+mod gogs_pr;
 mod keychain;
 mod runner;
 mod share;
@@ -174,6 +175,22 @@ enum Cmd {
         #[arg(last = true)]
         command: Vec<String>,
     },
+    /// Create Gogs pull requests from one source branch to one or more targets.
+    GogsPr {
+        /// Gogs repo web URL, e.g. https://sg-git.pwtk.cc/ka-cn/super-admin.
+        #[arg(long)]
+        repo: String,
+        /// Source/head branch.
+        #[arg(long = "from")]
+        from: String,
+        /// Comma-separated target/base branches, e.g. dev,feature-test,main.
+        #[arg(long = "to")]
+        to: String,
+        #[arg(long)]
+        title: String,
+        #[arg(long, default_value = "")]
+        body: String,
+    },
     /// Delete a single account from the vault.
     Revoke { id: String },
     /// Delete the entire vault (all accounts). Irreversible.
@@ -282,6 +299,13 @@ fn run() -> Result<()> {
             let mut vault = Vault::open()?;
             act_as::cmd_as(&mut vault, &id, &target, &command, no_confirm)
         }
+        Cmd::GogsPr {
+            repo,
+            from,
+            to,
+            title,
+            body,
+        } => gogs_pr::create(&repo, &from, &to, &title, &body),
         Cmd::Check { id } => cmd_check(&id),
         Cmd::Rm { id } => cmd_rm(&id),
         Cmd::Revoke { id } => cmd_rm(&id),

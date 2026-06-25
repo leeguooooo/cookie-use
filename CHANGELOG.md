@@ -2,6 +2,22 @@
 
 All notable changes to cookie-use are documented here. Versions follow semver.
 
+## [Unreleased]
+
+### Changed
+- **`list` now takes the website as a positional argument and accepts a full URL.**
+  `cookie-use list https://dash.cloudflare.com/` (or `cookie-use list dash.cloudflare.com`)
+  now works — previously `list` only had a `--site <domain>` flag and rejected a
+  positional URL with "unexpected argument". URLs are normalized to their host
+  (scheme/path/query/port stripped). The old `--site` flag still works as a
+  deprecated alias.
+- **`list` matching is forgiving.** The term matches base-domain ↔ subdomain in
+  either direction (`cloudflare.com` finds `dash.cloudflare.com` accounts and
+  vice-versa), partial terms (`cloudflare`), and also searches the account id /
+  label / hint (so `cookie-use list leo` or `… wind` works).
+- **`list` output is grouped by website**, with accounts listed (sorted by id)
+  under each site header — easier to scan a vault of many accounts per site.
+
 ## [0.2.1] - 2026-06-17
 
 ### Security

@@ -14,6 +14,7 @@ mod vault;
 
 use anyhow::{anyhow, Context, Result};
 use chrono::Utc;
+use std::collections::BTreeMap;
 use clap::{Parser, Subcommand};
 use serde_json::{json, Value};
 use vault::{Account, Status, Vault};
@@ -67,8 +68,14 @@ enum Cmd {
     },
     /// List stored accounts.
     List {
-        #[arg(long)]
+        /// Filter by website — a domain or full URL
+        /// (e.g. `dash.cloudflare.com` or `https://dash.cloudflare.com/`).
+        /// Forgiving: base-domain ↔ subdomain match, partial terms, and also
+        /// searches account id / label. Lists everything, grouped by site, when omitted.
         site: Option<String>,
+        /// Deprecated alias for the positional SITE argument.
+        #[arg(long = "site", value_name = "SITE", conflicts_with = "site")]
+        site_flag: Option<String>,
         #[arg(long)]
         json: bool,
     },
@@ -214,7 +221,7 @@ fn run() -> Result<()> {
             label,
             hint,
         } => cmd_import(&file, &site, &id, label, hint),
-        Cmd::List { site, json } => cmd_list(site.as_deref(), json),
+        Cmd::List { site, site_flag, json } => cmd_list(site.or(site_flag).as_deref(), json),
         Cmd::Show { id } => cmd_show(&id),
         Cmd::Use {
             id,
@@ -361,10 +368,12 @@ fn cmd_import(
 
 fn cmd_list(site_filter: Option<&str>, json_mode: bool) -> Result<()> {
     let vault = Vault::open()?;
+    // 过滤器接受域名或完整 URL（https://dash.cloudflare.com/login → dash.cloudflare.com）。
+    let needle = site_filter.map(normalize_site_filter);
     let accounts: Vec<&Account> = vault
         .accounts()
         .iter()
-        .filter(|a| site_filter.map(|s| a.site.contains(s)).unwrap_or(true))
+        .filter(|a| needle.as_deref().map(|s| account_matches(a, s)).unwrap_or(true))
         .collect();
 
     if json_mode {
@@ -383,29 +392,76 @@ fn cmd_list(site_filter: Option<&str>, json_mode: bool) -> Result<()> {
     }
 
     if accounts.is_empty() {
-        println!("no accounts yet — add one with `cookie-use add --from-profile <p> --site <d>`");
+        match needle.as_deref() {
+            Some(s) => println!("no saved accounts matching site \"{s}\""),
+            None => println!(
+                "no accounts yet — add one with `cookie-use add --from-profile <p> --site <d>`"
+            ),
+        }
         return Ok(());
     }
-    println!(
-        "{:<22} {:<24} {:<8} {:<6} HINT/LABEL",
-        "ID", "SITE", "STATUS", "COOKIES"
-    );
-    for a in accounts {
-        let hint = a
-            .account_hint
-            .as_deref()
-            .or(a.label.as_deref())
-            .unwrap_or("");
-        println!(
-            "{:<22} {:<24} {:<8} {:<6} {}",
-            truncate(&a.id, 22),
-            truncate(&a.site, 24),
-            a.status,
-            a.cookies.len(),
-            hint
-        );
+
+    // 按网站(site 字符串)分组列出,组内按 id 排序 —— "根据网站列出已保存的 cookie"。
+    let mut groups: BTreeMap<&str, Vec<&Account>> = BTreeMap::new();
+    for a in &accounts {
+        groups.entry(a.site.as_str()).or_default().push(a);
+    }
+    for (site, mut accts) in groups {
+        accts.sort_by(|x, y| x.id.cmp(&y.id));
+        println!("{site}");
+        for a in accts {
+            let hint = a
+                .account_hint
+                .as_deref()
+                .or(a.label.as_deref())
+                .unwrap_or("");
+            println!(
+                "  {:<24} {:<8} {:>4}  {}",
+                truncate(&a.id, 24),
+                a.status,
+                a.cookies.len(),
+                hint
+            );
+        }
     }
     Ok(())
+}
+
+/// Normalize a website filter to a bare lowercase host: strips scheme, path,
+/// query and port, so `https://dash.cloudflare.com/login` → `dash.cloudflare.com`.
+fn normalize_site_filter(s: &str) -> String {
+    let s = s.trim();
+    let s = s.split_once("://").map(|(_, rest)| rest).unwrap_or(s);
+    let host = s.split(['/', '?', ':']).next().unwrap_or(s);
+    host.trim().to_lowercase()
+}
+
+/// Does an account match a (normalized, lowercase) search term? Website-first
+/// but forgiving: matches the base domain ↔ a subdomain in either direction,
+/// loose substrings on a domain, and falls back to id / label / hint so a user
+/// can also search by a memorable name (`leo`, `wind`). `cloudflare.com` matches
+/// an account stored as `cloudflare.com,dash.cloudflare.com` and vice-versa.
+fn account_matches(a: &Account, needle: &str) -> bool {
+    if domain_matches(&a.site, needle) {
+        return true;
+    }
+    let hay = |s: &str| s.to_lowercase().contains(needle);
+    hay(&a.id)
+        || a.label.as_deref().map(hay).unwrap_or(false)
+        || a.account_hint.as_deref().map(hay).unwrap_or(false)
+}
+
+/// Does a comma-joined `site` string match a normalized needle, domain-aware?
+/// Matches base-domain ↔ subdomain in either direction, plus loose substrings.
+fn domain_matches(site: &str, needle: &str) -> bool {
+    site.to_lowercase().split(',').any(|dom| {
+        let dom = dom.trim();
+        !dom.is_empty()
+            && (dom == needle
+                || dom.ends_with(&format!(".{needle}")) // needle is a parent of a stored subdomain
+                || needle.ends_with(&format!(".{dom}")) // needle is a subdomain of a stored domain
+                || dom.contains(needle)) // loose substring (partial term)
+    })
 }
 
 fn cmd_show(id: &str) -> Result<()> {
@@ -740,5 +796,40 @@ fn truncate(s: &str, max: usize) -> String {
         let mut t: String = s.chars().take(max.saturating_sub(1)).collect();
         t.push('…');
         t
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{domain_matches, normalize_site_filter};
+
+    #[test]
+    fn normalize_strips_scheme_path_query_port_and_lowercases() {
+        assert_eq!(normalize_site_filter("https://dash.cloudflare.com/"), "dash.cloudflare.com");
+        assert_eq!(
+            normalize_site_filter("https://dash.cloudflare.com/login?next=1"),
+            "dash.cloudflare.com"
+        );
+        assert_eq!(normalize_site_filter("dash.cloudflare.com"), "dash.cloudflare.com");
+        assert_eq!(normalize_site_filter("http://localhost:8001/app"), "localhost");
+        assert_eq!(normalize_site_filter("  HTTPS://ChatGPT.com  "), "chatgpt.com");
+    }
+
+    #[test]
+    fn domain_matching_is_forgiving() {
+        let site = "cloudflare.com,dash.cloudflare.com";
+        // user just types the base domain
+        assert!(domain_matches(site, "cloudflare.com"));
+        // exact subdomain
+        assert!(domain_matches(site, "dash.cloudflare.com"));
+        // partial term
+        assert!(domain_matches(site, "cloudflare"));
+        // base domain finds an account stored only as a subdomain
+        assert!(domain_matches("dash.cloudflare.com", "cloudflare.com"));
+        // subdomain query finds an account stored as the base domain
+        assert!(domain_matches("cloudflare.com", "dash.cloudflare.com"));
+        // non-match
+        assert!(!domain_matches(site, "chatgpt.com"));
+        assert!(!domain_matches("chatgpt.com,openai.com", "cloudflare.com"));
     }
 }

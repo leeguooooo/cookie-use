@@ -75,7 +75,7 @@ See <https://www.skills.sh/docs>. The skill lives at `skills/cookie-use/SKILL.md
 |---|---|
 | `cookie-use add --from-profile <profile> --site <domain[,domain]> [--id <id>] [--with-localstorage]` | Import a logged-in session from a Chrome profile (any site); optionally snapshot localStorage |
 | `cookie-use import --file <f> --site <domain> --id <id>` | Import from a JSON / cURL / Cookie-header export |
-| `cookie-use list [--site <domain>]` | List stored accounts (id, site, hint, status, last used) |
+| `cookie-use list [<site>]` | List stored accounts, grouped by website. `<site>` filters by a domain **or full URL** (e.g. `cookie-use list dash.cloudflare.com` or `cookie-use list https://dash.cloudflare.com/`). |
 | `cookie-use show <id>` | Account metadata (never prints cookie values) |
 | `cookie-use use <id> [--target session:<s>\|isolated] [--rewrite-domain <host>] [--open-url <url>]` | Apply an account into a browser target |
 | `cookie-use switch <id> --target <…>` | Clear the site's cookies in the target, then apply (clean switch) |

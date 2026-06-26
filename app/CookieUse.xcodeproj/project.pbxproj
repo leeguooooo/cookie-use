@@ -14,6 +14,7 @@
 		917E802238214637E2D48BD7 /* DesignSystem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 51C04796C96A908F7E217338 /* DesignSystem.swift */; };
 		9988EDD6EA974A6100A70D4A /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E1905408183DFD550FDC253 /* AppModel.swift */; };
 		99F6125120EDF97C30F643E8 /* TouchID.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B92CEED63E621AA2883BBF8 /* TouchID.swift */; };
+		9ADE9BE68EF559DB00A44EDB /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 1804D94991703C563BDABC15 /* Assets.xcassets */; };
 		AC5928384C47876802135DB9 /* RedeemSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE34B328853CB0FA74F104F3 /* RedeemSheet.swift */; };
 		BECB18D7889196330127F4C7 /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6C4DEFF421E4F2F6CB5C1FCB /* main.swift */; };
 		C59234627DFE6423FA3003D9 /* ShareSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04E1A60F1B05606508EB305A /* ShareSheet.swift */; };
@@ -24,6 +25,7 @@
 /* Begin PBXFileReference section */
 		04E1A60F1B05606508EB305A /* ShareSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareSheet.swift; sourceTree = "<group>"; };
 		0730DF5F3032B9DE1708F1F3 /* ImportSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImportSheet.swift; sourceTree = "<group>"; };
+		1804D94991703C563BDABC15 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		1B92CEED63E621AA2883BBF8 /* TouchID.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TouchID.swift; sourceTree = "<group>"; };
 		4E1905408183DFD550FDC253 /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
 		51C04796C96A908F7E217338 /* DesignSystem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignSystem.swift; sourceTree = "<group>"; };
@@ -64,6 +66,7 @@
 			isa = PBXGroup;
 			children = (
 				4E1905408183DFD550FDC253 /* AppModel.swift */,
+				1804D94991703C563BDABC15 /* Assets.xcassets */,
 				CBB55731A6E398A3D92ED1C6 /* CaptureSheet.swift */,
 				51C04796C96A908F7E217338 /* DesignSystem.swift */,
 				0730DF5F3032B9DE1708F1F3 /* ImportSheet.swift */,
@@ -102,6 +105,7 @@
 			buildConfigurationList = 22EC7F771A92F58026D7A8E3 /* Build configuration list for PBXNativeTarget "CookieUse" */;
 			buildPhases = (
 				A8EBDD9593F824D285FD6073 /* Sources */,
+				53F8CBCC8FF7AE758DD1EFD0 /* Resources */,
 			);
 			buildRules = (
 			);
@@ -143,6 +147,17 @@
 			);
 		};
 /* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		53F8CBCC8FF7AE758DD1EFD0 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				9ADE9BE68EF559DB00A44EDB /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		A8EBDD9593F824D285FD6073 /* Sources */ = {

@@ -19,6 +19,23 @@ struct ManagementView: View {
         }
         .frame(minWidth: 720, minHeight: 520)
         .task { await model.refresh() }
+        .sheet(item: $model.sheet) { sheet in
+            switch sheet {
+            case .capture: CaptureSheet(model: model)
+            case .importFile: ImportSheet(model: model)
+            case .redeem: RedeemSheet(model: model)
+            case let .share(account): ShareSheet(account: account, model: model)
+            }
+        }
+        .safeAreaInset(edge: .bottom) {
+            if let msg = model.lastMessage {
+                Label(msg, systemImage: "checkmark.circle.fill")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .padding(.horizontal, 14).padding(.vertical, 8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(.regularMaterial)
+            }
+        }
     }
 
     private var sidebar: some View {
@@ -51,7 +68,12 @@ struct ManagementView: View {
         }
         .frame(minWidth: 240)
         .toolbar {
-            ToolbarItem(placement: .primaryAction) {
+            ToolbarItemGroup(placement: .primaryAction) {
+                Button { model.sheet = .capture } label: { Label("Capture", systemImage: "plus.circle") }
+                Menu {
+                    Button { model.sheet = .importFile } label: { Label("Import from file…", systemImage: "square.and.arrow.down") }
+                    Button { model.sheet = .redeem } label: { Label("Redeem bundle…", systemImage: "gift") }
+                } label: { Image(systemName: "ellipsis.circle") }
                 Button { Task { await model.refresh() } } label: { Image(systemName: "arrow.clockwise") }
             }
         }
@@ -64,6 +86,10 @@ struct DetailPane: View {
     let summary: AccountSummary
     @State private var detail: Account?
     @State private var loadError: String?
+    @State private var showRename = false
+    @State private var renameText = ""
+    @State private var showRemove = false
+    @State private var replayOrigin = ""
 
     var body: some View {
         ScrollView {
@@ -96,18 +122,50 @@ struct DetailPane: View {
     }
 
     private var actions: some View {
-        HStack(spacing: 10) {
-            Button { Task { await model.switchInto(summary) } } label: {
-                Label("Switch into Chrome", systemImage: "arrow.right.circle.fill")
-            }
-            .buttonStyle(.borderedProminent).controlSize(.large)
-            .disabled(!model.chromeConnected)
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 10) {
+                Button { Task { await model.switchInto(summary) } } label: {
+                    Label("Switch into Chrome", systemImage: "arrow.right.circle.fill")
+                }
+                .buttonStyle(.borderedProminent).controlSize(.large)
+                .disabled(!model.chromeConnected)
 
-            Button { Task { await model.runAll(site: summary.primarySite) } } label: {
-                Label("Run all (\(summary.primarySite))", systemImage: "rectangle.split.3x1")
+                Button { Task { await model.runAll(site: summary.primarySite) } } label: {
+                    Label("Run all", systemImage: "rectangle.split.3x1")
+                }
+                .buttonStyle(.bordered).controlSize(.large)
+
+                Button { model.sheet = .share(summary) } label: {
+                    Label("Share", systemImage: "square.and.arrow.up")
+                }
+                .buttonStyle(.bordered).controlSize(.large)
+
+                Menu {
+                    Button { renameText = summary.id; showRename = true } label: { Label("Rename…", systemImage: "pencil") }
+                    Button(role: .destructive) { showRemove = true } label: { Label("Remove", systemImage: "trash") }
+                } label: { Image(systemName: "ellipsis.circle") }
+                    .menuStyle(.borderlessButton).frame(width: 28)
+
+                Spacer(minLength: 0)
             }
-            .buttonStyle(.bordered).controlSize(.large)
-            Spacer(minLength: 0)
+
+            HStack(spacing: 8) {
+                Image(systemName: "arrow.triangle.2.circlepath").foregroundStyle(.secondary)
+                TextField("Replay on dev origin (e.g. localhost:8001)", text: $replayOrigin)
+                    .textFieldStyle(.roundedBorder)
+                Button("Replay") { Task { await model.replay(summary, to: replayOrigin) } }
+                    .disabled(replayOrigin.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+        }
+        .alert("Rename account", isPresented: $showRename) {
+            TextField("New id", text: $renameText)
+            Button("Cancel", role: .cancel) {}
+            Button("Rename") { Task { _ = await model.rename(summary, to: renameText) } }
+        }
+        .confirmationDialog("Remove “\(summary.id)”? This deletes the stored session.",
+                            isPresented: $showRemove, titleVisibility: .visible) {
+            Button("Remove", role: .destructive) { Task { _ = await model.remove(summary) } }
+            Button("Cancel", role: .cancel) {}
         }
     }
 

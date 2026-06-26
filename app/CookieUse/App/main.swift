@@ -24,7 +24,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             rootView: MenuBarView(
                 model: model,
                 onOpenWindow: { [weak self] in self?.openWindow() },
-                onCapture: { [weak self] in self?.openWindow() }
+                onCapture: { [weak self] in
+                    self?.openWindow()
+                    self?.model.sheet = .capture
+                }
             )
         )
     }

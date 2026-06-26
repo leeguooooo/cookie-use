@@ -8,16 +8,22 @@
 
 /* Begin PBXBuildFile section */
 		44959479C74EEA95BA95652A /* CLIBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8D7BE9C839BF81538F3AFD0E /* CLIBridge.swift */; };
+		541F51D4C4835531E0A0BA6F /* CaptureSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = CBB55731A6E398A3D92ED1C6 /* CaptureSheet.swift */; };
 		6F9E84F0E012F53B210D432C /* ManagementView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B26E03E3140666C2911F0AE8 /* ManagementView.swift */; };
 		7459B4FAACFA27EC34EDBA98 /* MenuBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E24DD601552167009412F88C /* MenuBarView.swift */; };
 		917E802238214637E2D48BD7 /* DesignSystem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 51C04796C96A908F7E217338 /* DesignSystem.swift */; };
 		9988EDD6EA974A6100A70D4A /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E1905408183DFD550FDC253 /* AppModel.swift */; };
 		99F6125120EDF97C30F643E8 /* TouchID.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B92CEED63E621AA2883BBF8 /* TouchID.swift */; };
+		AC5928384C47876802135DB9 /* RedeemSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE34B328853CB0FA74F104F3 /* RedeemSheet.swift */; };
 		BECB18D7889196330127F4C7 /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6C4DEFF421E4F2F6CB5C1FCB /* main.swift */; };
+		C59234627DFE6423FA3003D9 /* ShareSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04E1A60F1B05606508EB305A /* ShareSheet.swift */; };
 		D200874F9E04D306D87667F6 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = A428E19F4464B407FAD36435 /* Models.swift */; };
+		D27A7FF0BBABEA6D1407E1FC /* ImportSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0730DF5F3032B9DE1708F1F3 /* ImportSheet.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		04E1A60F1B05606508EB305A /* ShareSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareSheet.swift; sourceTree = "<group>"; };
+		0730DF5F3032B9DE1708F1F3 /* ImportSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImportSheet.swift; sourceTree = "<group>"; };
 		1B92CEED63E621AA2883BBF8 /* TouchID.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TouchID.swift; sourceTree = "<group>"; };
 		4E1905408183DFD550FDC253 /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
 		51C04796C96A908F7E217338 /* DesignSystem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignSystem.swift; sourceTree = "<group>"; };
@@ -26,8 +32,10 @@
 		8D7BE9C839BF81538F3AFD0E /* CLIBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CLIBridge.swift; sourceTree = "<group>"; };
 		A428E19F4464B407FAD36435 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
 		B26E03E3140666C2911F0AE8 /* ManagementView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ManagementView.swift; sourceTree = "<group>"; };
+		CBB55731A6E398A3D92ED1C6 /* CaptureSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptureSheet.swift; sourceTree = "<group>"; };
 		D38FE5E16668351BAD45F78C /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		E24DD601552167009412F88C /* MenuBarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarView.swift; sourceTree = "<group>"; };
+		FE34B328853CB0FA74F104F3 /* RedeemSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RedeemSheet.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -56,9 +64,13 @@
 			isa = PBXGroup;
 			children = (
 				4E1905408183DFD550FDC253 /* AppModel.swift */,
+				CBB55731A6E398A3D92ED1C6 /* CaptureSheet.swift */,
 				51C04796C96A908F7E217338 /* DesignSystem.swift */,
+				0730DF5F3032B9DE1708F1F3 /* ImportSheet.swift */,
 				B26E03E3140666C2911F0AE8 /* ManagementView.swift */,
 				E24DD601552167009412F88C /* MenuBarView.swift */,
+				FE34B328853CB0FA74F104F3 /* RedeemSheet.swift */,
+				04E1A60F1B05606508EB305A /* ShareSheet.swift */,
 			);
 			name = UI;
 			path = CookieUse/UI;
@@ -139,10 +151,14 @@
 			files = (
 				9988EDD6EA974A6100A70D4A /* AppModel.swift in Sources */,
 				44959479C74EEA95BA95652A /* CLIBridge.swift in Sources */,
+				541F51D4C4835531E0A0BA6F /* CaptureSheet.swift in Sources */,
 				917E802238214637E2D48BD7 /* DesignSystem.swift in Sources */,
+				D27A7FF0BBABEA6D1407E1FC /* ImportSheet.swift in Sources */,
 				6F9E84F0E012F53B210D432C /* ManagementView.swift in Sources */,
 				7459B4FAACFA27EC34EDBA98 /* MenuBarView.swift in Sources */,
 				D200874F9E04D306D87667F6 /* Models.swift in Sources */,
+				AC5928384C47876802135DB9 /* RedeemSheet.swift in Sources */,
+				C59234627DFE6423FA3003D9 /* ShareSheet.swift in Sources */,
 				99F6125120EDF97C30F643E8 /* TouchID.swift in Sources */,
 				BECB18D7889196330127F4C7 /* main.swift in Sources */,
 			);

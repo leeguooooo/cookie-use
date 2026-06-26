@@ -162,6 +162,15 @@ actor CLIBridge {
         return try await json(args, as: AddResponse.self).id
     }
 
+    private struct ImportResponse: Decodable { let id: String; let site: String }
+
+    func importFile(_ path: String, site: String, id: String, label: String? = nil, hint: String? = nil) async throws -> String {
+        var args = ["import", "--file", path, "--site", site, "--id", id]
+        if let label { args += ["--label", label] }
+        if let hint { args += ["--hint", hint] }
+        return try await json(args, as: ImportResponse.self).id
+    }
+
     // MARK: Injection (Touch ID handled by the GUI; CLI runs unattended)
 
     func apply(_ verb: String, id: String, target: InjectTarget = .session("default"),
@@ -180,6 +189,12 @@ actor CLIBridge {
 
     func switchTo(id: String, target: InjectTarget = .session("default")) async throws -> ApplyResult {
         try await apply("switch", id: id, target: target)
+    }
+
+    /// Cross-origin QA: rewrite the cookie domain + open a dev origin in one shot.
+    func replay(id: String, to devOrigin: String, target: InjectTarget = .session("default")) async throws -> ApplyResult {
+        try await json(["replay", id, "--to", devOrigin, "--target", target.cliValue, "--no-confirm"],
+                       as: ApplyResult.self, inject: true)
     }
 
     private struct RunResponse: Decodable { let results: [RunResult] }

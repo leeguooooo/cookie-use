@@ -61,4 +61,77 @@ final class AppModel: ObservableObject {
         do { _ = try await bridge.run(site: site, all: true) }
         catch { lastError = error.localizedDescription }
     }
+
+    // MARK: Sheet routing
+
+    enum Sheet: Identifiable, Equatable {
+        case capture
+        case importFile
+        case redeem
+        case share(AccountSummary)
+        var id: String {
+            switch self {
+            case .capture: return "capture"
+            case .importFile: return "import"
+            case .redeem: return "redeem"
+            case let .share(a): return "share-\(a.id)"
+            }
+        }
+    }
+
+    @Published var sheet: Sheet?
+    @Published var lastMessage: String?
+
+    private func report(_ message: String) { lastMessage = message; lastError = nil }
+    private func fail(_ error: Error) { lastError = error.localizedDescription }
+
+    // MARK: Mutating actions (each refreshes the list on success)
+
+    func capture(fromProfile: String, site: String, id: String?, label: String?, hint: String?, withLocalStorage: Bool) async -> Bool {
+        do {
+            let newID = try await bridge.add(fromProfile: fromProfile, site: site, id: id?.nilIfBlank,
+                                             label: label?.nilIfBlank, hint: hint?.nilIfBlank, withLocalStorage: withLocalStorage)
+            report("Captured “\(newID)”."); await refresh(); return true
+        } catch { fail(error); return false }
+    }
+
+    func importFile(path: String, site: String, id: String, label: String?, hint: String?) async -> Bool {
+        do {
+            let newID = try await bridge.importFile(path, site: site, id: id, label: label?.nilIfBlank, hint: hint?.nilIfBlank)
+            report("Imported “\(newID)”."); await refresh(); return true
+        } catch { fail(error); return false }
+    }
+
+    func share(_ account: AccountSummary, password: String) async -> URL? {
+        do { let url = try await bridge.share(id: account.id, password: password); report("Shared to \(url.lastPathComponent)."); return url }
+        catch { fail(error); return nil }
+    }
+
+    func redeem(bundle: String, password: String, newID: String?) async -> Bool {
+        do {
+            let result = try await bridge.redeem(bundle: bundle, password: password, newID: newID?.nilIfBlank)
+            report(result.overwrote ? "Redeemed “\(result.id)” (replaced existing)." : "Redeemed “\(result.id)”.")
+            await refresh(); return true
+        } catch { fail(error); return false }
+    }
+
+    func rename(_ account: AccountSummary, to newID: String) async -> Bool {
+        do { try await bridge.rename(id: account.id, to: newID); report("Renamed to “\(newID)”."); await refresh(); return true }
+        catch { fail(error); return false }
+    }
+
+    func remove(_ account: AccountSummary) async -> Bool {
+        do { try await bridge.remove(id: account.id); report("Removed “\(account.id)”."); await refresh(); return true }
+        catch { fail(error); return false }
+    }
+
+    func replay(_ account: AccountSummary, to devOrigin: String) async {
+        guard await BiometricGate.confirm(reason: "Replay “\(account.displayName)” on \(devOrigin)") else { return }
+        do { _ = try await bridge.replay(id: account.id, to: devOrigin, target: .session(targetSession)); report("Replayed on \(devOrigin).") }
+        catch { fail(error) }
+    }
+}
+
+private extension String {
+    var nilIfBlank: String? { trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : self }
 }

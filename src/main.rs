@@ -28,6 +28,10 @@ use vault::{Account, Status, Vault};
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
+    /// Emit machine-readable JSON instead of human text (works on every
+    /// subcommand). Never prints cookie values — only counts/metadata.
+    #[arg(long, global = true)]
+    json: bool,
 }
 
 #[derive(Subcommand)]
@@ -76,8 +80,6 @@ enum Cmd {
         /// Deprecated alias for the positional SITE argument.
         #[arg(long = "site", value_name = "SITE", conflicts_with = "site")]
         site_flag: Option<String>,
-        #[arg(long)]
-        json: bool,
     },
     /// Show an account's metadata (never prints cookie values).
     Show { id: String },
@@ -198,14 +200,28 @@ enum Cmd {
 }
 
 fn main() {
-    if let Err(e) = run() {
-        eprintln!("error: {e:#}");
+    let cli = Cli::parse();
+    let json = cli.json;
+    if let Err(e) = run(cli) {
+        if json {
+            // Uniform error envelope on stderr so a GUI can parse failures
+            // (exit codes stay coarse — always 1).
+            let msg = format!("{e:#}");
+            eprintln!(
+                "{}",
+                serde_json::to_string(&json!({ "error": msg }))
+                    .unwrap_or_else(|_| format!("{{\"error\":{:?}}}", format!("{e:#}")))
+            );
+        } else {
+            eprintln!("error: {e:#}");
+        }
         std::process::exit(1);
     }
 }
 
-fn run() -> Result<()> {
-    match Cli::parse().cmd {
+fn run(cli: Cli) -> Result<()> {
+    let json = cli.json;
+    match cli.cmd {
         Cmd::Add {
             from_profile,
             site,
@@ -213,16 +229,16 @@ fn run() -> Result<()> {
             label,
             hint,
             with_localstorage,
-        } => cmd_add(&from_profile, &site, id, label, hint, with_localstorage),
+        } => cmd_add(&from_profile, &site, id, label, hint, with_localstorage, json),
         Cmd::Import {
             file,
             site,
             id,
             label,
             hint,
-        } => cmd_import(&file, &site, &id, label, hint),
-        Cmd::List { site, site_flag, json } => cmd_list(site.or(site_flag).as_deref(), json),
-        Cmd::Show { id } => cmd_show(&id),
+        } => cmd_import(&file, &site, &id, label, hint, json),
+        Cmd::List { site, site_flag } => cmd_list(site.or(site_flag).as_deref(), json),
+        Cmd::Show { id } => cmd_show(&id, json),
         Cmd::Use {
             id,
             target,
@@ -240,6 +256,7 @@ fn run() -> Result<()> {
             open_url: open_url.as_deref(),
             inject_localstorage: !no_localstorage,
             confirm: !no_confirm,
+            json,
         }),
         Cmd::Switch {
             id,
@@ -258,15 +275,16 @@ fn run() -> Result<()> {
             open_url: open_url.as_deref(),
             inject_localstorage: !no_localstorage,
             confirm: !no_confirm,
+            json,
         }),
         Cmd::Replay {
             id,
             to,
             target,
             no_confirm,
-        } => cmd_replay(&id, &to, &target, !no_confirm),
+        } => cmd_replay(&id, &to, &target, !no_confirm, json),
         Cmd::Share { id, out, password } => {
-            share::cmd_share(&Vault::open()?, &id, out.as_deref(), password.as_deref())
+            share::cmd_share(&Vault::open()?, &id, out.as_deref(), password.as_deref(), json)
         }
         Cmd::Redeem {
             bundle,
@@ -274,11 +292,11 @@ fn run() -> Result<()> {
             id,
         } => {
             let mut vault = Vault::open()?;
-            share::cmd_redeem(&mut vault, &bundle, password.as_deref(), id.as_deref())
+            share::cmd_redeem(&mut vault, &bundle, password.as_deref(), id.as_deref(), json)
         }
         Cmd::Run { id, site, all } => {
             let mut vault = Vault::open()?;
-            runner::cmd_run(&mut vault, id.as_deref(), site.as_deref(), all)
+            runner::cmd_run(&mut vault, id.as_deref(), site.as_deref(), all, json)
         }
         Cmd::As {
             id,
@@ -287,13 +305,13 @@ fn run() -> Result<()> {
             command,
         } => {
             let mut vault = Vault::open()?;
-            act_as::cmd_as(&mut vault, &id, &target, &command, no_confirm)
+            act_as::cmd_as(&mut vault, &id, &target, &command, no_confirm, json)
         }
-        Cmd::Check { id } => cmd_check(&id),
-        Cmd::Rm { id } => cmd_rm(&id),
-        Cmd::Revoke { id } => cmd_rm(&id),
-        Cmd::Wipe { yes } => cmd_wipe(yes),
-        Cmd::Rename { id, new_id } => cmd_rename(&id, &new_id),
+        Cmd::Check { id } => cmd_check(&id, json),
+        Cmd::Rm { id } => cmd_rm(&id, json),
+        Cmd::Revoke { id } => cmd_rm(&id, json),
+        Cmd::Wipe { yes } => cmd_wipe(yes, json),
+        Cmd::Rename { id, new_id } => cmd_rename(&id, &new_id, json),
     }
 }
 
@@ -304,6 +322,7 @@ fn cmd_add(
     label: Option<String>,
     hint: Option<String>,
     with_localstorage: bool,
+    json: bool,
 ) -> Result<()> {
     let cookies = chrome_use::export_from_profile(profile, site)?;
     if cookies.is_empty() {
@@ -315,7 +334,11 @@ fn cmd_add(
         let url = format!("https://{}", primary_domain(site));
         match chrome_use::capture_local_storage(&cookies, &url) {
             Ok(ls) if !ls.is_empty() => {
-                println!("captured {} localStorage item(s) from {url}", ls.len());
+                // Human-only note (stdout) — suppressed in --json so the only
+                // stdout line is the JSON object.
+                if !json {
+                    println!("captured {} localStorage item(s) from {url}", ls.len());
+                }
                 Some(ls)
             }
             Ok(_) => {
@@ -331,6 +354,7 @@ fn cmd_add(
     } else {
         None
     };
+    let ls_count = local_storage.as_ref().map(|m| m.len()).unwrap_or(0);
     let mut vault = Vault::open()?;
     let id = id.unwrap_or_else(|| next_id(&vault, site));
     store(
@@ -343,7 +367,16 @@ fn cmd_add(
         hint,
     )?;
     vault.save()?;
-    println!("added \"{id}\" ({site}) from profile \"{profile}\"");
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string(&json!({
+                "id": id, "site": site, "localstorage_captured": ls_count,
+            }))?
+        );
+    } else {
+        println!("added \"{id}\" ({site}) from profile \"{profile}\"");
+    }
     Ok(())
 }
 
@@ -353,6 +386,7 @@ fn cmd_import(
     id: &str,
     label: Option<String>,
     hint: Option<String>,
+    json: bool,
 ) -> Result<()> {
     let raw = std::fs::read_to_string(file).with_context(|| format!("reading {file}"))?;
     let cookies = parse_cookie_file(&raw, site)?;
@@ -362,7 +396,14 @@ fn cmd_import(
     let mut vault = Vault::open()?;
     store(&mut vault, id.to_string(), site, cookies, None, label, hint)?;
     vault.save()?;
-    println!("imported \"{id}\" ({site}) from {file}");
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string(&json!({ "id": id, "site": site }))?
+        );
+    } else {
+        println!("imported \"{id}\" ({site}) from {file}");
+    }
     Ok(())
 }
 
@@ -464,11 +505,58 @@ fn domain_matches(site: &str, needle: &str) -> bool {
     })
 }
 
-fn cmd_show(id: &str) -> Result<()> {
+fn cmd_show(id: &str, json: bool) -> Result<()> {
     let vault = Vault::open()?;
     let a = vault
         .find(id)
         .ok_or_else(|| anyhow!("no account \"{id}\""))?;
+
+    // Sorted unique cookie domains (names/domains only — never values).
+    let mut domains: Vec<String> = a
+        .cookies
+        .iter()
+        .filter_map(|c| c.get("domain").and_then(|d| d.as_str()).map(String::from))
+        .collect();
+    domains.sort();
+    domains.dedup();
+    let soonest = soonest_expiry(&a.cookies);
+
+    if json {
+        // Soonest cookie expiry as rfc3339, or null for session-only sessions.
+        let expires = soonest
+            .and_then(|exp| chrono::DateTime::from_timestamp(exp, 0))
+            .map(|dt| dt.to_rfc3339());
+        // localStorage KEYS only — never values (they can hold tokens).
+        let ls_keys: Vec<&str> = a
+            .local_storage
+            .as_ref()
+            .map(|ls| {
+                let mut keys: Vec<&str> = ls.keys().map(String::as_str).collect();
+                keys.sort_unstable();
+                keys
+            })
+            .unwrap_or_default();
+        println!(
+            "{}",
+            serde_json::to_string(&json!({
+                "id": a.id,
+                "site": a.site,
+                "label": a.label,
+                "hint": a.account_hint,
+                "status": a.status.to_string(),
+                "cookies": a.cookies.len(),
+                "domains": domains,
+                "expires": expires,
+                "session_only": soonest.is_none(),
+                "local_storage": ls_keys,
+                "created_at": a.created_at,
+                "updated_at": a.updated_at,
+                "last_used_at": a.last_used_at,
+            }))?
+        );
+        return Ok(());
+    }
+
     println!("id:          {}", a.id);
     println!("site:        {}", a.site);
     if let Some(l) = &a.label {
@@ -532,6 +620,8 @@ struct ApplyArgs<'a> {
     inject_localstorage: bool,
     /// Require a biometric/TTY confirmation before injecting the session.
     confirm: bool,
+    /// Emit a machine-readable JSON result instead of the human line.
+    json: bool,
 }
 
 fn cmd_apply(args: ApplyArgs) -> Result<()> {
@@ -572,6 +662,12 @@ fn cmd_apply(args: ApplyArgs) -> Result<()> {
     } else {
         None
     };
+    // How many localStorage items actually get injected: only when a page is
+    // opened (origin-scoped) and injection wasn't disabled.
+    let ls_injected = match (open_url.as_deref(), local_storage) {
+        (Some(_), Some(items)) => items.len(),
+        _ => 0,
+    };
     let opts = chrome_use::ApplyOpts {
         rewrite_domain: args.rewrite_domain,
         open_url: open_url.as_deref(),
@@ -583,15 +679,29 @@ fn cmd_apply(args: ApplyArgs) -> Result<()> {
         a.last_used_at = Some(Utc::now());
     }
     vault.save()?;
-    println!(
-        "applied \"{}\" ({})",
-        args.id,
-        if args.clear_first { "switched" } else { "use" }
-    );
+    if args.json {
+        println!(
+            "{}",
+            serde_json::to_string(&json!({
+                "id": args.id,
+                "session": target.session_name(),
+                "opened_url": open_url,
+                "cookies": account.cookies.len(),
+                "localstorage": ls_injected,
+                "ok": true,
+            }))?
+        );
+    } else {
+        println!(
+            "applied \"{}\" ({})",
+            args.id,
+            if args.clear_first { "switched" } else { "use" }
+        );
+    }
     Ok(())
 }
 
-fn cmd_check(id: &str) -> Result<()> {
+fn cmd_check(id: &str, json: bool) -> Result<()> {
     let mut vault = Vault::open()?;
     let status = {
         let a = vault
@@ -603,19 +713,33 @@ fn cmd_check(id: &str) -> Result<()> {
         a.status = status;
     }
     vault.save()?;
-    println!("{id}: {status}");
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string(&json!({ "id": id, "status": status.to_string() }))?
+        );
+    } else {
+        println!("{id}: {status}");
+    }
     Ok(())
 }
 
-fn cmd_rm(id: &str) -> Result<()> {
+fn cmd_rm(id: &str, json: bool) -> Result<()> {
     let mut vault = Vault::open()?;
     vault.remove(id)?;
     vault.save()?;
-    println!("removed \"{id}\"");
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string(&json!({ "id": id, "removed": true }))?
+        );
+    } else {
+        println!("removed \"{id}\"");
+    }
     Ok(())
 }
 
-fn cmd_rename(id: &str, new_id: &str) -> Result<()> {
+fn cmd_rename(id: &str, new_id: &str, json: bool) -> Result<()> {
     let mut vault = Vault::open()?;
     if vault.find(new_id).is_some() {
         return Err(anyhow!("\"{new_id}\" already exists"));
@@ -626,14 +750,21 @@ fn cmd_rename(id: &str, new_id: &str) -> Result<()> {
     a.id = new_id.to_string();
     a.updated_at = Utc::now();
     vault.save()?;
-    println!("renamed \"{id}\" -> \"{new_id}\"");
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string(&json!({ "id": id, "new_id": new_id }))?
+        );
+    } else {
+        println!("renamed \"{id}\" -> \"{new_id}\"");
+    }
     Ok(())
 }
 
 /// QA cross-origin sugar: replay a captured session onto a local dev origin.
 /// Equivalent to `use --rewrite-domain <host> --open-url http://<host:port>`,
 /// so a prod login can be exercised against localhost in one obvious command.
-fn cmd_replay(id: &str, to: &str, target: &str, confirm: bool) -> Result<()> {
+fn cmd_replay(id: &str, to: &str, target: &str, confirm: bool, json: bool) -> Result<()> {
     // `to` may be "localhost:8001", "127.0.0.1:3000", or a full http(s) URL.
     let stripped = to
         .trim_start_matches("http://")
@@ -659,18 +790,26 @@ fn cmd_replay(id: &str, to: &str, target: &str, confirm: bool) -> Result<()> {
         open_url: Some(&open_url),
         inject_localstorage: true,
         confirm,
+        json,
     })
 }
 
 /// Delete the entire vault. Destructive; confirms unless `--yes`.
-fn cmd_wipe(yes: bool) -> Result<()> {
+fn cmd_wipe(yes: bool, json: bool) -> Result<()> {
     let vault = Vault::open()?;
     let n = vault.accounts().len();
     if !yes {
         confirm::confirm_tty(&format!("delete the ENTIRE vault ({n} account(s))"))?;
     }
     vault.delete_file()?;
-    println!("wiped vault ({n} account(s) removed)");
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string(&json!({ "removed": n }))?
+        );
+    } else {
+        println!("wiped vault ({n} account(s) removed)");
+    }
     Ok(())
 }
 

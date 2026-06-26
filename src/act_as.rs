@@ -32,6 +32,7 @@ pub fn cmd_as(
     target: &str,
     command: &[String],
     no_confirm: bool,
+    json: bool,
 ) -> Result<()> {
     validate(command)?;
 
@@ -57,8 +58,19 @@ pub fn cmd_as(
     }
     vault.save()?;
 
-    let cmd_display = command.join(" ");
-    println!("acting as \"{id}\" — running: {cmd_display}");
+    // Announce the applied session before handing stdout to the child (which
+    // inherits our stdio). In --json this is the single structured line.
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string(&serde_json::json!({
+                "id": id, "session": parsed_target.session_name(), "ok": true,
+            }))?
+        );
+    } else {
+        let cmd_display = command.join(" ");
+        println!("acting as \"{id}\" — running: {cmd_display}");
+    }
 
     let env_vars = child_env(id, &account.site, target);
     let status = std::process::Command::new(&command[0])

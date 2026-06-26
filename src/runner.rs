@@ -26,6 +26,7 @@ pub fn cmd_run(
     id: Option<&str>,
     site: Option<&str>,
     all: bool,
+    json: bool,
 ) -> anyhow::Result<()> {
     // Clone accounts we need to open so we can mutate the vault afterwards.
     let selected: Vec<Account> = select(vault.accounts(), id, site, all)?
@@ -35,6 +36,8 @@ pub fn cmd_run(
 
     let mut opened = 0usize;
     let mut errors = 0usize;
+    // Per-account outcome for --json (failures only hit stderr in text mode).
+    let mut results: Vec<serde_json::Value> = Vec::new();
 
     for account in &selected {
         let session = iso_session(&account.id);
@@ -47,16 +50,28 @@ pub fn cmd_run(
             account.local_storage.as_ref(),
         ) {
             Ok(()) => {
-                println!("opened \"{}\" → {}", account.id, session);
+                if !json {
+                    println!("opened \"{}\" → {}", account.id, session);
+                }
                 opened += 1;
+                results.push(serde_json::json!({
+                    "id": account.id, "session": session, "opened_url": url,
+                    "ok": true, "error": serde_json::Value::Null,
+                }));
                 // Update last_used_at in the vault.
                 if let Some(a) = vault.find_mut(&account.id) {
                     a.last_used_at = Some(Utc::now());
                 }
             }
             Err(e) => {
-                eprintln!("warning: could not open \"{}\": {e:#}", account.id);
+                if !json {
+                    eprintln!("warning: could not open \"{}\": {e:#}", account.id);
+                }
                 errors += 1;
+                results.push(serde_json::json!({
+                    "id": account.id, "session": session, "opened_url": serde_json::Value::Null,
+                    "ok": false, "error": format!("{e:#}"),
+                }));
             }
         }
     }
@@ -64,6 +79,16 @@ pub fn cmd_run(
     // Persist last_used_at updates in one shot.
     if opened > 0 {
         vault.save()?;
+    }
+
+    if json {
+        // Every selected account is reported (incl. failures) — exit stays 0 so
+        // the GUI parses the per-account array rather than the exit code.
+        println!(
+            "{}",
+            serde_json::to_string(&serde_json::json!({ "results": results }))?
+        );
+        return Ok(());
     }
 
     println!("opened {opened} account(s) in isolated windows");

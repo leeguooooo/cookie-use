@@ -14,6 +14,7 @@ mod vault;
 
 use anyhow::{anyhow, Context, Result};
 use chrono::Utc;
+use std::collections::BTreeMap;
 use clap::{Parser, Subcommand};
 use serde_json::{json, Value};
 use vault::{Account, Status, Vault};
@@ -27,6 +28,10 @@ use vault::{Account, Status, Vault};
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
+    /// Emit machine-readable JSON instead of human text (works on every
+    /// subcommand). Never prints cookie values — only counts/metadata.
+    #[arg(long, global = true)]
+    json: bool,
 }
 
 #[derive(Subcommand)]
@@ -67,10 +72,14 @@ enum Cmd {
     },
     /// List stored accounts.
     List {
-        #[arg(long)]
+        /// Filter by website — a domain or full URL
+        /// (e.g. `dash.cloudflare.com` or `https://dash.cloudflare.com/`).
+        /// Forgiving: base-domain ↔ subdomain match, partial terms, and also
+        /// searches account id / label. Lists everything, grouped by site, when omitted.
         site: Option<String>,
-        #[arg(long)]
-        json: bool,
+        /// Deprecated alias for the positional SITE argument.
+        #[arg(long = "site", value_name = "SITE", conflicts_with = "site")]
+        site_flag: Option<String>,
     },
     /// Show an account's metadata (never prints cookie values).
     Show { id: String },
@@ -191,14 +200,28 @@ enum Cmd {
 }
 
 fn main() {
-    if let Err(e) = run() {
-        eprintln!("error: {e:#}");
+    let cli = Cli::parse();
+    let json = cli.json;
+    if let Err(e) = run(cli) {
+        if json {
+            // Uniform error envelope on stderr so a GUI can parse failures
+            // (exit codes stay coarse — always 1).
+            let msg = format!("{e:#}");
+            eprintln!(
+                "{}",
+                serde_json::to_string(&json!({ "error": msg }))
+                    .unwrap_or_else(|_| format!("{{\"error\":{:?}}}", format!("{e:#}")))
+            );
+        } else {
+            eprintln!("error: {e:#}");
+        }
         std::process::exit(1);
     }
 }
 
-fn run() -> Result<()> {
-    match Cli::parse().cmd {
+fn run(cli: Cli) -> Result<()> {
+    let json = cli.json;
+    match cli.cmd {
         Cmd::Add {
             from_profile,
             site,
@@ -206,16 +229,16 @@ fn run() -> Result<()> {
             label,
             hint,
             with_localstorage,
-        } => cmd_add(&from_profile, &site, id, label, hint, with_localstorage),
+        } => cmd_add(&from_profile, &site, id, label, hint, with_localstorage, json),
         Cmd::Import {
             file,
             site,
             id,
             label,
             hint,
-        } => cmd_import(&file, &site, &id, label, hint),
-        Cmd::List { site, json } => cmd_list(site.as_deref(), json),
-        Cmd::Show { id } => cmd_show(&id),
+        } => cmd_import(&file, &site, &id, label, hint, json),
+        Cmd::List { site, site_flag } => cmd_list(site.or(site_flag).as_deref(), json),
+        Cmd::Show { id } => cmd_show(&id, json),
         Cmd::Use {
             id,
             target,
@@ -233,6 +256,7 @@ fn run() -> Result<()> {
             open_url: open_url.as_deref(),
             inject_localstorage: !no_localstorage,
             confirm: !no_confirm,
+            json,
         }),
         Cmd::Switch {
             id,
@@ -251,15 +275,16 @@ fn run() -> Result<()> {
             open_url: open_url.as_deref(),
             inject_localstorage: !no_localstorage,
             confirm: !no_confirm,
+            json,
         }),
         Cmd::Replay {
             id,
             to,
             target,
             no_confirm,
-        } => cmd_replay(&id, &to, &target, !no_confirm),
+        } => cmd_replay(&id, &to, &target, !no_confirm, json),
         Cmd::Share { id, out, password } => {
-            share::cmd_share(&Vault::open()?, &id, out.as_deref(), password.as_deref())
+            share::cmd_share(&Vault::open()?, &id, out.as_deref(), password.as_deref(), json)
         }
         Cmd::Redeem {
             bundle,
@@ -267,11 +292,11 @@ fn run() -> Result<()> {
             id,
         } => {
             let mut vault = Vault::open()?;
-            share::cmd_redeem(&mut vault, &bundle, password.as_deref(), id.as_deref())
+            share::cmd_redeem(&mut vault, &bundle, password.as_deref(), id.as_deref(), json)
         }
         Cmd::Run { id, site, all } => {
             let mut vault = Vault::open()?;
-            runner::cmd_run(&mut vault, id.as_deref(), site.as_deref(), all)
+            runner::cmd_run(&mut vault, id.as_deref(), site.as_deref(), all, json)
         }
         Cmd::As {
             id,
@@ -280,13 +305,13 @@ fn run() -> Result<()> {
             command,
         } => {
             let mut vault = Vault::open()?;
-            act_as::cmd_as(&mut vault, &id, &target, &command, no_confirm)
+            act_as::cmd_as(&mut vault, &id, &target, &command, no_confirm, json)
         }
-        Cmd::Check { id } => cmd_check(&id),
-        Cmd::Rm { id } => cmd_rm(&id),
-        Cmd::Revoke { id } => cmd_rm(&id),
-        Cmd::Wipe { yes } => cmd_wipe(yes),
-        Cmd::Rename { id, new_id } => cmd_rename(&id, &new_id),
+        Cmd::Check { id } => cmd_check(&id, json),
+        Cmd::Rm { id } => cmd_rm(&id, json),
+        Cmd::Revoke { id } => cmd_rm(&id, json),
+        Cmd::Wipe { yes } => cmd_wipe(yes, json),
+        Cmd::Rename { id, new_id } => cmd_rename(&id, &new_id, json),
     }
 }
 
@@ -297,6 +322,7 @@ fn cmd_add(
     label: Option<String>,
     hint: Option<String>,
     with_localstorage: bool,
+    json: bool,
 ) -> Result<()> {
     let cookies = chrome_use::export_from_profile(profile, site)?;
     if cookies.is_empty() {
@@ -308,7 +334,11 @@ fn cmd_add(
         let url = format!("https://{}", primary_domain(site));
         match chrome_use::capture_local_storage(&cookies, &url) {
             Ok(ls) if !ls.is_empty() => {
-                println!("captured {} localStorage item(s) from {url}", ls.len());
+                // Human-only note (stdout) — suppressed in --json so the only
+                // stdout line is the JSON object.
+                if !json {
+                    println!("captured {} localStorage item(s) from {url}", ls.len());
+                }
                 Some(ls)
             }
             Ok(_) => {
@@ -324,6 +354,7 @@ fn cmd_add(
     } else {
         None
     };
+    let ls_count = local_storage.as_ref().map(|m| m.len()).unwrap_or(0);
     let mut vault = Vault::open()?;
     let id = id.unwrap_or_else(|| next_id(&vault, site));
     store(
@@ -336,7 +367,16 @@ fn cmd_add(
         hint,
     )?;
     vault.save()?;
-    println!("added \"{id}\" ({site}) from profile \"{profile}\"");
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string(&json!({
+                "id": id, "site": site, "localstorage_captured": ls_count,
+            }))?
+        );
+    } else {
+        println!("added \"{id}\" ({site}) from profile \"{profile}\"");
+    }
     Ok(())
 }
 
@@ -346,6 +386,7 @@ fn cmd_import(
     id: &str,
     label: Option<String>,
     hint: Option<String>,
+    json: bool,
 ) -> Result<()> {
     let raw = std::fs::read_to_string(file).with_context(|| format!("reading {file}"))?;
     let cookies = parse_cookie_file(&raw, site)?;
@@ -355,16 +396,25 @@ fn cmd_import(
     let mut vault = Vault::open()?;
     store(&mut vault, id.to_string(), site, cookies, None, label, hint)?;
     vault.save()?;
-    println!("imported \"{id}\" ({site}) from {file}");
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string(&json!({ "id": id, "site": site }))?
+        );
+    } else {
+        println!("imported \"{id}\" ({site}) from {file}");
+    }
     Ok(())
 }
 
 fn cmd_list(site_filter: Option<&str>, json_mode: bool) -> Result<()> {
     let vault = Vault::open()?;
+    // 过滤器接受域名或完整 URL（https://dash.cloudflare.com/login → dash.cloudflare.com）。
+    let needle = site_filter.map(normalize_site_filter);
     let accounts: Vec<&Account> = vault
         .accounts()
         .iter()
-        .filter(|a| site_filter.map(|s| a.site.contains(s)).unwrap_or(true))
+        .filter(|a| needle.as_deref().map(|s| account_matches(a, s)).unwrap_or(true))
         .collect();
 
     if json_mode {
@@ -383,36 +433,130 @@ fn cmd_list(site_filter: Option<&str>, json_mode: bool) -> Result<()> {
     }
 
     if accounts.is_empty() {
-        println!("no accounts yet — add one with `cookie-use add --from-profile <p> --site <d>`");
+        match needle.as_deref() {
+            Some(s) => println!("no saved accounts matching site \"{s}\""),
+            None => println!(
+                "no accounts yet — add one with `cookie-use add --from-profile <p> --site <d>`"
+            ),
+        }
         return Ok(());
     }
-    println!(
-        "{:<22} {:<24} {:<8} {:<6} HINT/LABEL",
-        "ID", "SITE", "STATUS", "COOKIES"
-    );
-    for a in accounts {
-        let hint = a
-            .account_hint
-            .as_deref()
-            .or(a.label.as_deref())
-            .unwrap_or("");
-        println!(
-            "{:<22} {:<24} {:<8} {:<6} {}",
-            truncate(&a.id, 22),
-            truncate(&a.site, 24),
-            a.status,
-            a.cookies.len(),
-            hint
-        );
+
+    // 按网站(site 字符串)分组列出,组内按 id 排序 —— "根据网站列出已保存的 cookie"。
+    let mut groups: BTreeMap<&str, Vec<&Account>> = BTreeMap::new();
+    for a in &accounts {
+        groups.entry(a.site.as_str()).or_default().push(a);
+    }
+    for (site, mut accts) in groups {
+        accts.sort_by(|x, y| x.id.cmp(&y.id));
+        println!("{site}");
+        for a in accts {
+            let hint = a
+                .account_hint
+                .as_deref()
+                .or(a.label.as_deref())
+                .unwrap_or("");
+            println!(
+                "  {:<24} {:<8} {:>4}  {}",
+                truncate(&a.id, 24),
+                a.status,
+                a.cookies.len(),
+                hint
+            );
+        }
     }
     Ok(())
 }
 
-fn cmd_show(id: &str) -> Result<()> {
+/// Normalize a website filter to a bare lowercase host: strips scheme, path,
+/// query and port, so `https://dash.cloudflare.com/login` → `dash.cloudflare.com`.
+fn normalize_site_filter(s: &str) -> String {
+    let s = s.trim();
+    let s = s.split_once("://").map(|(_, rest)| rest).unwrap_or(s);
+    let host = s.split(['/', '?', ':']).next().unwrap_or(s);
+    host.trim().to_lowercase()
+}
+
+/// Does an account match a (normalized, lowercase) search term? Website-first
+/// but forgiving: matches the base domain ↔ a subdomain in either direction,
+/// loose substrings on a domain, and falls back to id / label / hint so a user
+/// can also search by a memorable name (`leo`, `wind`). `cloudflare.com` matches
+/// an account stored as `cloudflare.com,dash.cloudflare.com` and vice-versa.
+fn account_matches(a: &Account, needle: &str) -> bool {
+    if domain_matches(&a.site, needle) {
+        return true;
+    }
+    let hay = |s: &str| s.to_lowercase().contains(needle);
+    hay(&a.id)
+        || a.label.as_deref().map(hay).unwrap_or(false)
+        || a.account_hint.as_deref().map(hay).unwrap_or(false)
+}
+
+/// Does a comma-joined `site` string match a normalized needle, domain-aware?
+/// Matches base-domain ↔ subdomain in either direction, plus loose substrings.
+fn domain_matches(site: &str, needle: &str) -> bool {
+    site.to_lowercase().split(',').any(|dom| {
+        let dom = dom.trim();
+        !dom.is_empty()
+            && (dom == needle
+                || dom.ends_with(&format!(".{needle}")) // needle is a parent of a stored subdomain
+                || needle.ends_with(&format!(".{dom}")) // needle is a subdomain of a stored domain
+                || dom.contains(needle)) // loose substring (partial term)
+    })
+}
+
+fn cmd_show(id: &str, json: bool) -> Result<()> {
     let vault = Vault::open()?;
     let a = vault
         .find(id)
         .ok_or_else(|| anyhow!("no account \"{id}\""))?;
+
+    // Sorted unique cookie domains (names/domains only — never values).
+    let mut domains: Vec<String> = a
+        .cookies
+        .iter()
+        .filter_map(|c| c.get("domain").and_then(|d| d.as_str()).map(String::from))
+        .collect();
+    domains.sort();
+    domains.dedup();
+    let soonest = soonest_expiry(&a.cookies);
+
+    if json {
+        // Soonest cookie expiry as rfc3339, or null for session-only sessions.
+        let expires = soonest
+            .and_then(|exp| chrono::DateTime::from_timestamp(exp, 0))
+            .map(|dt| dt.to_rfc3339());
+        // localStorage KEYS only — never values (they can hold tokens).
+        let ls_keys: Vec<&str> = a
+            .local_storage
+            .as_ref()
+            .map(|ls| {
+                let mut keys: Vec<&str> = ls.keys().map(String::as_str).collect();
+                keys.sort_unstable();
+                keys
+            })
+            .unwrap_or_default();
+        println!(
+            "{}",
+            serde_json::to_string(&json!({
+                "id": a.id,
+                "site": a.site,
+                "label": a.label,
+                "hint": a.account_hint,
+                "status": a.status.to_string(),
+                "cookies": a.cookies.len(),
+                "domains": domains,
+                "expires": expires,
+                "session_only": soonest.is_none(),
+                "local_storage": ls_keys,
+                "created_at": a.created_at,
+                "updated_at": a.updated_at,
+                "last_used_at": a.last_used_at,
+            }))?
+        );
+        return Ok(());
+    }
+
     println!("id:          {}", a.id);
     println!("site:        {}", a.site);
     if let Some(l) = &a.label {
@@ -476,6 +620,8 @@ struct ApplyArgs<'a> {
     inject_localstorage: bool,
     /// Require a biometric/TTY confirmation before injecting the session.
     confirm: bool,
+    /// Emit a machine-readable JSON result instead of the human line.
+    json: bool,
 }
 
 fn cmd_apply(args: ApplyArgs) -> Result<()> {
@@ -516,6 +662,12 @@ fn cmd_apply(args: ApplyArgs) -> Result<()> {
     } else {
         None
     };
+    // How many localStorage items actually get injected: only when a page is
+    // opened (origin-scoped) and injection wasn't disabled.
+    let ls_injected = match (open_url.as_deref(), local_storage) {
+        (Some(_), Some(items)) => items.len(),
+        _ => 0,
+    };
     let opts = chrome_use::ApplyOpts {
         rewrite_domain: args.rewrite_domain,
         open_url: open_url.as_deref(),
@@ -527,15 +679,29 @@ fn cmd_apply(args: ApplyArgs) -> Result<()> {
         a.last_used_at = Some(Utc::now());
     }
     vault.save()?;
-    println!(
-        "applied \"{}\" ({})",
-        args.id,
-        if args.clear_first { "switched" } else { "use" }
-    );
+    if args.json {
+        println!(
+            "{}",
+            serde_json::to_string(&json!({
+                "id": args.id,
+                "session": target.session_name(),
+                "opened_url": open_url,
+                "cookies": account.cookies.len(),
+                "localstorage": ls_injected,
+                "ok": true,
+            }))?
+        );
+    } else {
+        println!(
+            "applied \"{}\" ({})",
+            args.id,
+            if args.clear_first { "switched" } else { "use" }
+        );
+    }
     Ok(())
 }
 
-fn cmd_check(id: &str) -> Result<()> {
+fn cmd_check(id: &str, json: bool) -> Result<()> {
     let mut vault = Vault::open()?;
     let status = {
         let a = vault
@@ -547,19 +713,33 @@ fn cmd_check(id: &str) -> Result<()> {
         a.status = status;
     }
     vault.save()?;
-    println!("{id}: {status}");
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string(&json!({ "id": id, "status": status.to_string() }))?
+        );
+    } else {
+        println!("{id}: {status}");
+    }
     Ok(())
 }
 
-fn cmd_rm(id: &str) -> Result<()> {
+fn cmd_rm(id: &str, json: bool) -> Result<()> {
     let mut vault = Vault::open()?;
     vault.remove(id)?;
     vault.save()?;
-    println!("removed \"{id}\"");
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string(&json!({ "id": id, "removed": true }))?
+        );
+    } else {
+        println!("removed \"{id}\"");
+    }
     Ok(())
 }
 
-fn cmd_rename(id: &str, new_id: &str) -> Result<()> {
+fn cmd_rename(id: &str, new_id: &str, json: bool) -> Result<()> {
     let mut vault = Vault::open()?;
     if vault.find(new_id).is_some() {
         return Err(anyhow!("\"{new_id}\" already exists"));
@@ -570,14 +750,21 @@ fn cmd_rename(id: &str, new_id: &str) -> Result<()> {
     a.id = new_id.to_string();
     a.updated_at = Utc::now();
     vault.save()?;
-    println!("renamed \"{id}\" -> \"{new_id}\"");
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string(&json!({ "id": id, "new_id": new_id }))?
+        );
+    } else {
+        println!("renamed \"{id}\" -> \"{new_id}\"");
+    }
     Ok(())
 }
 
 /// QA cross-origin sugar: replay a captured session onto a local dev origin.
 /// Equivalent to `use --rewrite-domain <host> --open-url http://<host:port>`,
 /// so a prod login can be exercised against localhost in one obvious command.
-fn cmd_replay(id: &str, to: &str, target: &str, confirm: bool) -> Result<()> {
+fn cmd_replay(id: &str, to: &str, target: &str, confirm: bool, json: bool) -> Result<()> {
     // `to` may be "localhost:8001", "127.0.0.1:3000", or a full http(s) URL.
     let stripped = to
         .trim_start_matches("http://")
@@ -603,18 +790,26 @@ fn cmd_replay(id: &str, to: &str, target: &str, confirm: bool) -> Result<()> {
         open_url: Some(&open_url),
         inject_localstorage: true,
         confirm,
+        json,
     })
 }
 
 /// Delete the entire vault. Destructive; confirms unless `--yes`.
-fn cmd_wipe(yes: bool) -> Result<()> {
+fn cmd_wipe(yes: bool, json: bool) -> Result<()> {
     let vault = Vault::open()?;
     let n = vault.accounts().len();
     if !yes {
         confirm::confirm_tty(&format!("delete the ENTIRE vault ({n} account(s))"))?;
     }
     vault.delete_file()?;
-    println!("wiped vault ({n} account(s) removed)");
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string(&json!({ "removed": n }))?
+        );
+    } else {
+        println!("wiped vault ({n} account(s) removed)");
+    }
     Ok(())
 }
 
@@ -740,5 +935,40 @@ fn truncate(s: &str, max: usize) -> String {
         let mut t: String = s.chars().take(max.saturating_sub(1)).collect();
         t.push('…');
         t
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{domain_matches, normalize_site_filter};
+
+    #[test]
+    fn normalize_strips_scheme_path_query_port_and_lowercases() {
+        assert_eq!(normalize_site_filter("https://dash.cloudflare.com/"), "dash.cloudflare.com");
+        assert_eq!(
+            normalize_site_filter("https://dash.cloudflare.com/login?next=1"),
+            "dash.cloudflare.com"
+        );
+        assert_eq!(normalize_site_filter("dash.cloudflare.com"), "dash.cloudflare.com");
+        assert_eq!(normalize_site_filter("http://localhost:8001/app"), "localhost");
+        assert_eq!(normalize_site_filter("  HTTPS://ChatGPT.com  "), "chatgpt.com");
+    }
+
+    #[test]
+    fn domain_matching_is_forgiving() {
+        let site = "cloudflare.com,dash.cloudflare.com";
+        // user just types the base domain
+        assert!(domain_matches(site, "cloudflare.com"));
+        // exact subdomain
+        assert!(domain_matches(site, "dash.cloudflare.com"));
+        // partial term
+        assert!(domain_matches(site, "cloudflare"));
+        // base domain finds an account stored only as a subdomain
+        assert!(domain_matches("dash.cloudflare.com", "cloudflare.com"));
+        // subdomain query finds an account stored as the base domain
+        assert!(domain_matches("cloudflare.com", "dash.cloudflare.com"));
+        // non-match
+        assert!(!domain_matches(site, "chatgpt.com"));
+        assert!(!domain_matches("chatgpt.com,openai.com", "cloudflare.com"));
     }
 }

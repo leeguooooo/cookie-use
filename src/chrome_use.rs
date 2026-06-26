@@ -37,6 +37,16 @@ impl Target {
             ))
         }
     }
+
+    /// The concrete chrome-use session name this target resolves to. Mirrors the
+    /// resolution in [`apply`] (an Isolated target uses the fixed throwaway
+    /// session name). Used for machine-readable (`--json`) output.
+    pub fn session_name(&self) -> String {
+        match self {
+            Target::Session(name) => name.clone(),
+            Target::Isolated => "cookie-use-iso".to_string(),
+        }
+    }
 }
 
 /// Options controlling how an account is applied to a target.

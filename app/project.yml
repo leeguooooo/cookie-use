@@ -1,0 +1,39 @@
+name: CookieUse
+options:
+  bundleIdPrefix: com.cookieuse
+  deploymentTarget:
+    macOS: "26.0"
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    DEAD_CODE_STRIPPING: "YES"
+    ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS: "YES"
+targets:
+  CookieUse:
+    type: application
+    platform: macOS
+    sources:
+      - path: CookieUse/App
+      - path: CookieUse/Core
+      - path: CookieUse/UI
+    info:
+      path: CookieUse/App/Info.plist
+      properties:
+        CFBundleDevelopmentRegion: en
+        CFBundleExecutable: $(EXECUTABLE_NAME)
+        CFBundleIdentifier: $(PRODUCT_BUNDLE_IDENTIFIER)
+        CFBundleInfoDictionaryVersion: "6.0"
+        CFBundleName: $(PRODUCT_NAME)
+        CFBundlePackageType: APPL
+        CFBundleShortVersionString: "0.1.0"
+        CFBundleVersion: "1"
+        LSMinimumSystemVersion: "26.0"
+        LSUIElement: true
+        NSHumanReadableCopyright: ""
+        NSPrincipalClass: NSApplication
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.cookieuse.app
+        PRODUCT_NAME: CookieUse
+        ENABLE_HARDENED_RUNTIME: "YES"
+        INFOPLIST_KEY_NSFaceIDUsageDescription: "Unlock and inject account sessions."

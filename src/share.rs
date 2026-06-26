@@ -182,7 +182,13 @@ fn require_password(password: Option<&str>, prompt: &str) -> Result<String> {
 /// Writes `<slug>.cusession` (or the path given via `out`) and prints the
 /// path plus a one-line redeem hint so the recipient knows exactly what to
 /// run.
-pub fn cmd_share(vault: &Vault, id: &str, out: Option<&str>, password: Option<&str>) -> Result<()> {
+pub fn cmd_share(
+    vault: &Vault,
+    id: &str,
+    out: Option<&str>,
+    password: Option<&str>,
+    json: bool,
+) -> Result<()> {
     let account = vault
         .find(id)
         .ok_or_else(|| anyhow!("no account \"{id}\""))?;
@@ -198,8 +204,18 @@ pub fn cmd_share(vault: &Vault, id: &str, out: Option<&str>, password: Option<&s
 
     std::fs::write(&path, &bundle_bytes).with_context(|| format!("writing bundle to {path}"))?;
 
-    println!("{path}");
-    println!("redeem with: cookie-use redeem {path}");
+    let redeem_cmd = format!("cookie-use redeem {path}");
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string(&serde_json::json!({
+                "path": path, "redeem_cmd": redeem_cmd,
+            }))?
+        );
+    } else {
+        println!("{path}");
+        println!("redeem with: {redeem_cmd}");
+    }
     Ok(())
 }
 
@@ -212,6 +228,7 @@ pub fn cmd_redeem(
     bundle_path: &str,
     password: Option<&str>,
     new_id: Option<&str>,
+    json: bool,
 ) -> Result<()> {
     let bundle_bytes =
         std::fs::read(bundle_path).with_context(|| format!("reading bundle {bundle_path}"))?;
@@ -233,13 +250,25 @@ pub fn cmd_redeem(
     let final_id = account.id.clone();
     let site = account.site.clone();
 
+    // Detect an overwrite BEFORE the upsert so a GUI can warn on collision.
+    let overwrote_existing = vault.find(&final_id).is_some();
+
     vault.upsert(account);
     vault.save()?;
 
-    // Nudge the recipient to install cookie-use if they redeemed from a
-    // raw file share (the install hint is the viral loop).
-    println!("redeemed \"{final_id}\" ({site})");
-    println!("hint: if cookie-use is not installed → https://github.com/leeguooooo/cookie-use");
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string(&serde_json::json!({
+                "id": final_id, "site": site, "overwrote_existing": overwrote_existing,
+            }))?
+        );
+    } else {
+        // Nudge the recipient to install cookie-use if they redeemed from a
+        // raw file share (the install hint is the viral loop).
+        println!("redeemed \"{final_id}\" ({site})");
+        println!("hint: if cookie-use is not installed → https://github.com/leeguooooo/cookie-use");
+    }
     Ok(())
 }
 

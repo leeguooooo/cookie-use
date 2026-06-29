@@ -14,9 +14,9 @@ mod vault;
 
 use anyhow::{anyhow, Context, Result};
 use chrono::Utc;
-use std::collections::BTreeMap;
 use clap::{Parser, Subcommand};
 use serde_json::{json, Value};
+use std::collections::BTreeMap;
 use vault::{Account, Status, Vault};
 
 #[derive(Parser)]
@@ -229,7 +229,15 @@ fn run(cli: Cli) -> Result<()> {
             label,
             hint,
             with_localstorage,
-        } => cmd_add(&from_profile, &site, id, label, hint, with_localstorage, json),
+        } => cmd_add(
+            &from_profile,
+            &site,
+            id,
+            label,
+            hint,
+            with_localstorage,
+            json,
+        ),
         Cmd::Import {
             file,
             site,
@@ -283,16 +291,26 @@ fn run(cli: Cli) -> Result<()> {
             target,
             no_confirm,
         } => cmd_replay(&id, &to, &target, !no_confirm, json),
-        Cmd::Share { id, out, password } => {
-            share::cmd_share(&Vault::open()?, &id, out.as_deref(), password.as_deref(), json)
-        }
+        Cmd::Share { id, out, password } => share::cmd_share(
+            &Vault::open()?,
+            &id,
+            out.as_deref(),
+            password.as_deref(),
+            json,
+        ),
         Cmd::Redeem {
             bundle,
             password,
             id,
         } => {
             let mut vault = Vault::open()?;
-            share::cmd_redeem(&mut vault, &bundle, password.as_deref(), id.as_deref(), json)
+            share::cmd_redeem(
+                &mut vault,
+                &bundle,
+                password.as_deref(),
+                id.as_deref(),
+                json,
+            )
         }
         Cmd::Run { id, site, all } => {
             let mut vault = Vault::open()?;
@@ -414,7 +432,12 @@ fn cmd_list(site_filter: Option<&str>, json_mode: bool) -> Result<()> {
     let accounts: Vec<&Account> = vault
         .accounts()
         .iter()
-        .filter(|a| needle.as_deref().map(|s| account_matches(a, s)).unwrap_or(true))
+        .filter(|a| {
+            needle
+                .as_deref()
+                .map(|s| account_matches(a, s))
+                .unwrap_or(true)
+        })
         .collect();
 
     if json_mode {
@@ -803,10 +826,7 @@ fn cmd_wipe(yes: bool, json: bool) -> Result<()> {
     }
     vault.delete_file()?;
     if json {
-        println!(
-            "{}",
-            serde_json::to_string(&json!({ "removed": n }))?
-        );
+        println!("{}", serde_json::to_string(&json!({ "removed": n }))?);
     } else {
         println!("wiped vault ({n} account(s) removed)");
     }
@@ -944,14 +964,26 @@ mod tests {
 
     #[test]
     fn normalize_strips_scheme_path_query_port_and_lowercases() {
-        assert_eq!(normalize_site_filter("https://dash.cloudflare.com/"), "dash.cloudflare.com");
+        assert_eq!(
+            normalize_site_filter("https://dash.cloudflare.com/"),
+            "dash.cloudflare.com"
+        );
         assert_eq!(
             normalize_site_filter("https://dash.cloudflare.com/login?next=1"),
             "dash.cloudflare.com"
         );
-        assert_eq!(normalize_site_filter("dash.cloudflare.com"), "dash.cloudflare.com");
-        assert_eq!(normalize_site_filter("http://localhost:8001/app"), "localhost");
-        assert_eq!(normalize_site_filter("  HTTPS://ChatGPT.com  "), "chatgpt.com");
+        assert_eq!(
+            normalize_site_filter("dash.cloudflare.com"),
+            "dash.cloudflare.com"
+        );
+        assert_eq!(
+            normalize_site_filter("http://localhost:8001/app"),
+            "localhost"
+        );
+        assert_eq!(
+            normalize_site_filter("  HTTPS://ChatGPT.com  "),
+            "chatgpt.com"
+        );
     }
 
     #[test]

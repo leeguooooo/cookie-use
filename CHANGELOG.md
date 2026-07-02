@@ -4,6 +4,20 @@ All notable changes to cookie-use are documented here. Versions follow semver.
 
 ## [Unreleased]
 
+### Added
+- **`fingerprint <id>` / `fingerprint --all`** — export a **hash-only** fingerprint
+  of an account's session cookies (SHA-256 of each cookie value, never the value)
+  so a separate tool such as `chrome-use` can verify "is the live browser session
+  logged in as this account?" without ever seeing a secret. `--json` emits the
+  agreed contract (single id → one account object like `show`; `--all` →
+  `{"accounts":[…]}` like `list`); human mode prints counts only (id, site, cookie
+  count, httpOnly/secure) — never values, never hashes. Cookie values shorter than
+  8 chars are excluded (low-entropy, useless as identity). Fingerprints are cached
+  in a **plaintext** sidecar (`~/.cookie-use/fingerprints.json`, hashes + names
+  only) written automatically on `add` / `import` / `use` / `switch`, so
+  `fingerprint` reads need no Keychain access or vault decrypt; `--all` uses the
+  cache and skips (listing on stderr) any account without a cached fingerprint.
+
 ### Changed
 - **`list` now takes the website as a positional argument and accepts a full URL.**
   `cookie-use list https://dash.cloudflare.com/` (or `cookie-use list dash.cloudflare.com`)

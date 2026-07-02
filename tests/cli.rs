@@ -232,6 +232,111 @@ fn as_no_confirm_passes_the_gate() {
     );
 }
 
+// --- fingerprint ----------------------------------------------------------
+
+#[test]
+fn fingerprint_hashes_values_caches_and_never_leaks() {
+    let sb = Sandbox::new();
+    // Import a high-entropy value (>= 8 chars) so it isn't excluded.
+    let cookie_file = sb.path("fp.cookies");
+    std::fs::write(&cookie_file, "sid=super-secret-session-token-1234").unwrap();
+    let imp = sb
+        .cmd()
+        .args(["import", "--file"])
+        .arg(&cookie_file)
+        .args(["--site", "acme.com", "--id", "acme/fp"])
+        .output()
+        .unwrap();
+    assert!(imp.status.success(), "import: {}", stderr_of(&imp));
+
+    // Single-id JSON: one account object with a hashed cookie, no value leak.
+    let out = sb
+        .cmd()
+        .args(["fingerprint", "acme/fp", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "fingerprint: {}", stderr_of(&out));
+    let s = stdout_of(&out);
+    assert!(s.contains("\"sha256\""), "no sha256: {s}");
+    assert!(s.contains("\"httpOnly\""), "no httpOnly: {s}");
+    assert!(
+        !s.contains("super-secret-session-token-1234"),
+        "fingerprint leaked a cookie value: {s}"
+    );
+
+    // A plaintext cache now sits next to the vault (readable without a decrypt).
+    let cache = sb.path("fingerprints.json");
+    assert!(cache.exists(), "no fingerprint cache written");
+    let cache_txt = std::fs::read_to_string(&cache).unwrap();
+    assert!(
+        !cache_txt.contains("super-secret-session-token-1234"),
+        "cache leaked a cookie value"
+    );
+    assert!(cache_txt.contains("\"sha256\""), "cache: {cache_txt}");
+
+    // `--all` uses the cache and wraps in {"accounts":[…]} like `list`.
+    let all = sb
+        .cmd()
+        .args(["fingerprint", "--all", "--json"])
+        .output()
+        .unwrap();
+    assert!(
+        all.status.success(),
+        "fingerprint --all: {}",
+        stderr_of(&all)
+    );
+    let a = stdout_of(&all);
+    assert!(a.contains("\"accounts\""), "all missing wrapper: {a}");
+    assert!(a.contains("acme/fp"), "all missing id: {a}");
+}
+
+#[test]
+fn fingerprint_excludes_low_entropy_values() {
+    let sb = Sandbox::new();
+    // seed() writes session=abc123; token=xyz789 — both values are < 8 chars.
+    sb.seed("acme/lo", "acme.com");
+    let out = sb
+        .cmd()
+        .args(["fingerprint", "acme/lo", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "fingerprint: {}", stderr_of(&out));
+    assert!(
+        stdout_of(&out).contains("\"cookies\":[]"),
+        "low-entropy values should yield no fingerprinted cookies: {}",
+        stdout_of(&out)
+    );
+}
+
+#[test]
+fn fingerprint_all_skips_and_flags_uncached_accounts() {
+    let sb = Sandbox::new();
+    sb.seed("acme/a", "acme.com");
+    // Simulate an account stored before fingerprints existed by dropping the
+    // auto-written cache. `--all` must SKIP it (not compute) and warn on stderr.
+    std::fs::remove_file(sb.path("fingerprints.json")).ok();
+    let out = sb
+        .cmd()
+        .args(["fingerprint", "--all", "--json"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "fingerprint --all: {}",
+        stderr_of(&out)
+    );
+    assert!(
+        stderr_of(&out).contains("no fingerprint yet"),
+        "expected an uncached warning on stderr: {}",
+        stderr_of(&out)
+    );
+    assert!(
+        stdout_of(&out).contains("\"accounts\":[]"),
+        "uncached account must be skipped, not computed: {}",
+        stdout_of(&out)
+    );
+}
+
 #[test]
 fn as_empty_command_is_rejected() {
     let sb = Sandbox::new();

@@ -80,6 +80,7 @@ See <https://www.skills.sh/docs>. The skill lives at `skills/cookie-use/SKILL.md
 | `cookie-use use <id> [--target session:<s>\|isolated] [--rewrite-domain <host>] [--open-url <url>]` | Apply an account into a browser target |
 | `cookie-use switch <id> --target <…>` | Clear the site's cookies in the target, then apply (clean switch) |
 | `cookie-use check <id>` | Liveness from cookie expiry (generic; site probes are pluggable later) |
+| `cookie-use fingerprint <id> \| --all [--json]` | Export a **hash-only** fingerprint (SHA-256 of each cookie value, never the value) so another tool can verify a live session is this account. Cached in a plaintext sidecar; reads need no decrypt |
 | `cookie-use replay <id> --to localhost:8001` | Cross-origin QA sugar: rewrite domain + open the dev origin in one command |
 | `cookie-use run <id> \| --site <d> --all \| --all` | Open one or many accounts in **side-by-side isolated windows** at once |
 | `cookie-use as <id> --target <…> -- <cmd>` | Run `<cmd>` in a session-scoped env (`COOKIE_USE_*`, `CHROME_USE_SESSION`) — an agent acts **as** that account |
@@ -158,7 +159,11 @@ environment-config matter outside cookie-use's scope.
 - Location: `~/.cookie-use/vault.enc` (AES-256-GCM encrypted blob).
 - Master key: generated on first run, stored in the macOS Keychain
   (service `cookie-use`, account `vault-key`). Cookie values never touch disk in plaintext.
-- `show` / `list` never print secret values; errors never echo them.
+- `show` / `list` / `fingerprint` never print secret values; errors never echo them.
+- `fingerprint` keeps a **plaintext** sidecar (`~/.cookie-use/fingerprints.json`)
+  holding only SHA-256 hashes of cookie values plus names/scope — safe at rest, and
+  readable without the Keychain or a vault decrypt. Cookie values themselves live
+  only in the encrypted vault. `wipe` deletes the sidecar too.
 - Headless / CI / agent hosts: set `COOKIE_USE_VAULT_KEY` (base64 of 32 bytes) to
   supply the key directly and skip the Keychain, and `COOKIE_USE_VAULT` to point
   at an alternate vault file.

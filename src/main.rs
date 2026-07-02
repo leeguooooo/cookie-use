@@ -7,6 +7,7 @@ mod act_as;
 mod chrome_use;
 mod confirm;
 mod crypto;
+mod fingerprint;
 mod keychain;
 mod runner;
 mod share;
@@ -191,6 +192,17 @@ enum Cmd {
         #[arg(long)]
         yes: bool,
     },
+    /// Export a hash-only fingerprint of an account's session cookies, so a
+    /// separate tool can verify "is the live session this account?" without ever
+    /// seeing a cookie value. Reads a plaintext cache when present (no decrypt).
+    Fingerprint {
+        /// Account id. Omit and pass --all to fingerprint every cached account.
+        id: Option<String>,
+        /// Fingerprint every account that already has a cached fingerprint,
+        /// skipping (and listing on stderr) those without one.
+        #[arg(long)]
+        all: bool,
+    },
     /// Update an account's liveness from its cookie expiry (generic heuristic).
     Check { id: String },
     /// Remove an account.
@@ -325,6 +337,7 @@ fn run(cli: Cli) -> Result<()> {
             let mut vault = Vault::open()?;
             act_as::cmd_as(&mut vault, &id, &target, &command, no_confirm, json)
         }
+        Cmd::Fingerprint { id, all } => cmd_fingerprint(id.as_deref(), all, json),
         Cmd::Check { id } => cmd_check(&id, json),
         Cmd::Rm { id } => cmd_rm(&id, json),
         Cmd::Revoke { id } => cmd_rm(&id, json),
@@ -385,6 +398,7 @@ fn cmd_add(
         hint,
     )?;
     vault.save()?;
+    refresh_fingerprint(&vault, &id);
     if json {
         println!(
             "{}",
@@ -414,6 +428,7 @@ fn cmd_import(
     let mut vault = Vault::open()?;
     store(&mut vault, id.to_string(), site, cookies, None, label, hint)?;
     vault.save()?;
+    refresh_fingerprint(&vault, id);
     if json {
         println!(
             "{}",
@@ -702,6 +717,9 @@ fn cmd_apply(args: ApplyArgs) -> Result<()> {
         a.last_used_at = Some(Utc::now());
     }
     vault.save()?;
+    // Keep the plaintext fingerprint cache warm on apply (cookies are unchanged,
+    // but this covers accounts stored before the cache existed).
+    refresh_fingerprint(&vault, args.id);
     if args.json {
         println!(
             "{}",
@@ -722,6 +740,95 @@ fn cmd_apply(args: ApplyArgs) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// Export hash-only fingerprints. Single-id prints one account object (like
+/// `show`); `--all` prints `{"accounts":[…]}` (like `list`).
+fn cmd_fingerprint(id: Option<&str>, all: bool, json: bool) -> Result<()> {
+    match (id, all) {
+        (Some(id), false) => fingerprint_one(id, json),
+        (None, true) => fingerprint_all(json),
+        (Some(_), true) => Err(anyhow!("pass either an <id> or --all, not both")),
+        (None, false) => Err(anyhow!(
+            "provide an account id (cookie-use fingerprint <id>) or --all"
+        )),
+    }
+}
+
+fn fingerprint_one(id: &str, json: bool) -> Result<()> {
+    let mut cache = fingerprint::Cache::open()?;
+    let fp = if let Some(cached) = cache.get(id) {
+        // Cache hit — no Keychain, no vault decrypt.
+        cached.clone()
+    } else {
+        // First fingerprint for this account: decrypt the vault once, compute,
+        // and store it so subsequent reads (and chrome-use) need no decrypt.
+        let vault = Vault::open()?;
+        let account = vault
+            .find(id)
+            .ok_or_else(|| anyhow!("no account \"{id}\""))?;
+        let fp = fingerprint::compute(account);
+        cache.insert(fp.clone());
+        cache.save()?;
+        fp
+    };
+    if json {
+        println!("{}", serde_json::to_string(&fp)?);
+    } else {
+        print_fingerprint_human(&fp);
+    }
+    Ok(())
+}
+
+fn fingerprint_all(json: bool) -> Result<()> {
+    let cache = fingerprint::Cache::open()?;
+    // Enumerate the account universe once so we can flag accounts that have no
+    // cached fingerprint yet — the vault has no plaintext account index, and a
+    // read never triggers the Touch ID gate (that gate is injection-only), so
+    // this is a single promptless decrypt, not N per-account prompts. Accounts
+    // without a cache are SKIPPED (never computed here), matching the contract.
+    // If the vault can't be opened at all, fall back to whatever is cached.
+    let ids: Vec<String> = match Vault::open() {
+        Ok(v) => v.accounts().iter().map(|a| a.id.clone()).collect(),
+        Err(_) => cache.ids(),
+    };
+
+    let mut present: Vec<&fingerprint::AccountFingerprint> = Vec::new();
+    for id in &ids {
+        match cache.get(id) {
+            Some(fp) => present.push(fp),
+            None => eprintln!("{id}: no fingerprint yet — run: cookie-use fingerprint {id}"),
+        }
+    }
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string(&json!({ "accounts": present }))?
+        );
+    } else if present.is_empty() {
+        println!("no fingerprints cached yet — run: cookie-use fingerprint <id>");
+    } else {
+        for (i, fp) in present.iter().enumerate() {
+            if i > 0 {
+                println!();
+            }
+            print_fingerprint_human(fp);
+        }
+    }
+    Ok(())
+}
+
+/// Human summary: counts only — never a value, never a hash.
+fn print_fingerprint_human(fp: &fingerprint::AccountFingerprint) {
+    let http_only = fp.cookies.iter().filter(|c| c.http_only).count();
+    let secure = fp.cookies.iter().filter(|c| c.secure).count();
+    println!("id:       {}", fp.id);
+    println!("site:     {}", fp.site);
+    println!("cookies:  {} fingerprinted", fp.cookies.len());
+    println!("httpOnly: {http_only}");
+    println!("secure:   {secure}");
+    println!("computed: {}", fp.computed_at.to_rfc3339());
 }
 
 fn cmd_check(id: &str, json: bool) -> Result<()> {
@@ -751,6 +858,7 @@ fn cmd_rm(id: &str, json: bool) -> Result<()> {
     let mut vault = Vault::open()?;
     vault.remove(id)?;
     vault.save()?;
+    fingerprint::forget(id);
     if json {
         println!(
             "{}",
@@ -773,6 +881,9 @@ fn cmd_rename(id: &str, new_id: &str, json: bool) -> Result<()> {
     a.id = new_id.to_string();
     a.updated_at = Utc::now();
     vault.save()?;
+    // The cached fingerprint is keyed by (and stamped with) the old id; drop it
+    // so it recomputes lazily under the new id on the next `fingerprint`.
+    fingerprint::forget(id);
     if json {
         println!(
             "{}",
@@ -825,6 +936,8 @@ fn cmd_wipe(yes: bool, json: bool) -> Result<()> {
         confirm::confirm_tty(&format!("delete the ENTIRE vault ({n} account(s))"))?;
     }
     vault.delete_file()?;
+    // Don't leave hashes of wiped accounts behind in the plaintext sidecar.
+    let _ = fingerprint::Cache::delete_file();
     if json {
         println!("{}", serde_json::to_string(&json!({ "removed": n }))?);
     } else {
@@ -834,6 +947,16 @@ fn cmd_wipe(yes: bool, json: bool) -> Result<()> {
 }
 
 // --- helpers ---
+
+/// Refresh an account's plaintext fingerprint cache, best-effort: a cache-write
+/// failure must never fail the underlying add/import/apply, so we only warn.
+fn refresh_fingerprint(vault: &Vault, id: &str) {
+    if let Some(a) = vault.find(id) {
+        if let Err(e) = fingerprint::refresh_cache(a) {
+            eprintln!("warning: could not update fingerprint cache for \"{id}\": {e:#}");
+        }
+    }
+}
 
 #[allow(clippy::too_many_arguments)]
 fn store(

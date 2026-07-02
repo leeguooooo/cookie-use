@@ -61,6 +61,10 @@ cookie-use import --file <path> --site <domain> --id <id>
 cookie-use list [--site <domain>] [--json]
 cookie-use show <id>                       # metadata only, never secrets
 cookie-use check <id>                      # liveness from cookie expiry
+cookie-use fingerprint <id> [--json]       # hash-only session fingerprint (SHA-256 of
+#                                            cookie values, never the value) — lets another
+#                                            tool verify a live session is this account.
+cookie-use fingerprint --all --json        # all cached fingerprints; skips uncached (stderr)
 
 # Apply / switch.
 cookie-use use <id> --target session:<name>     # inject into a connected chrome-use session

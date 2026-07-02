@@ -140,6 +140,17 @@ impl Vault {
     }
 }
 
+/// Directory that holds the vault and its plaintext sidecars (e.g. the
+/// fingerprint cache). Mirrors [`vault_path`]: the parent of `COOKIE_USE_VAULT`
+/// when set, else `~/.cookie-use`.
+pub fn config_dir() -> Result<PathBuf> {
+    let p = vault_path()?;
+    Ok(p.parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(".")))
+}
+
 fn vault_path() -> Result<PathBuf> {
     // `COOKIE_USE_VAULT` overrides the vault file location (headless hosts,
     // multiple isolated vaults, and isolated integration tests).

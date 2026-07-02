@@ -1,6 +1,6 @@
 [package]
 name = "cookie-use"
-version = "0.2.1"
+version = "0.3.0"
 edition = "2021"
 description = "Agent-friendly multi-account session manager — capture, store, and apply logged-in sessions for any website, across browsers and profiles."
 license = "Apache-2.0"

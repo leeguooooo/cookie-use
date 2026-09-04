@@ -45,3 +45,33 @@ jobs:
           files: |
             target/${{ matrix.target }}/release/${{ matrix.asset }}.tar.gz
             target/${{ matrix.target }}/release/${{ matrix.asset }}.tar.gz.sha256
+
+  # #6：README / install-app.sh 一直让用户下 CookieUse.dmg，但**从来没有哪个流水线发布过它**，
+  # 于是那条 GUI 安装命令自 v0.3.0 起恒 404。app/build-dmg.sh 早就在仓库里躺着，只是没人跑。
+  # ad-hoc 签名、不做公证——与 install-app.sh 的假设一致（curl 下载不带隔离属性，
+  # 且脚本装完会 xattr -cr）。
+  dmg:
+    name: Build and publish CookieUse.dmg
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install xcodegen
+        run: brew install xcodegen
+
+      - name: Build app + dmg
+        run: bash app/build-dmg.sh
+
+      - name: Verify the dmg actually mounts and contains the app
+        # 发一个装不上的资产比不发更糟：用户会照着 README 一路走到 hdiutil 才失败。
+        run: |
+          set -euo pipefail
+          mnt="$(hdiutil attach -nobrowse -noautoopen app/build/CookieUse.dmg | grep -o '/Volumes/.*' | head -1)"
+          test -d "$mnt/CookieUse.app" || { echo "dmg 里没有 CookieUse.app"; exit 1; }
+          hdiutil detach "$mnt" -quiet
+
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          files: app/build/CookieUse.dmg

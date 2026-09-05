@@ -20,21 +20,35 @@ case "$arch" in
   *) echo "unsupported architecture: $arch" >&2; exit 1 ;;
 esac
 
-# Resolve the latest release tag.
-tag="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" \
-  | grep -m1 '"tag_name"' | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/')"
-if [ -z "$tag" ]; then
-  echo "could not determine the latest cookie-use release." >&2
-  exit 1
-fi
-
-url="https://github.com/${REPO}/releases/download/${tag}/${BIN}-${target}.tar.gz"
+# #6：不要走 api.github.com。未认证的 API 有速率限制，额度用尽就返回 403，安装直接失败
+# ——而这跟本次安装该不该成功毫无关系。releases/latest/download/<asset> 是一条普通重定向，
+# 不消耗 API 额度，也不需要任何 token。
+url="https://github.com/${REPO}/releases/latest/download/${BIN}-${target}.tar.gz"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
-echo "downloading ${BIN} ${tag} (${target})..."
-curl -fsSL "$url" -o "$tmp/${BIN}.tar.gz"
+echo "downloading the latest ${BIN} (${target})..."
+if ! curl -fsSL "$url" -o "$tmp/${BIN}.tar.gz"; then
+  # 说清楚下不下来的是什么、以及人工怎么办——别只留一句 curl 的错误码。
+  echo "could not download ${url}" >&2
+  echo "check the releases page for an asset named ${BIN}-${target}.tar.gz:" >&2
+  echo "  https://github.com/${REPO}/releases/latest" >&2
+  exit 1
+fi
 tar -xzf "$tmp/${BIN}.tar.gz" -C "$tmp"
+
+# 校验和是发布的（sha256 sidecar），能拿到就核；拿不到不阻断安装。
+if curl -fsSL "${url}.sha256" -o "$tmp/${BIN}.tar.gz.sha256" 2>/dev/null; then
+  expected="$(awk '{print $1; exit}' "$tmp/${BIN}.tar.gz.sha256")"
+  actual="$(shasum -a 256 "$tmp/${BIN}.tar.gz" | awk '{print $1}')"
+  if [ "$expected" != "$actual" ]; then
+    echo "checksum mismatch for ${BIN}-${target}.tar.gz" >&2
+    echo "  expected $expected" >&2
+    echo "  actual   $actual" >&2
+    exit 1
+  fi
+  echo "checksum ok"
+fi
 
 dest="${HOME}/.local/bin"
 mkdir -p "$dest"

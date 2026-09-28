@@ -33,6 +33,17 @@ curl -fsSL https://raw.githubusercontent.com/leeguooooo/chrome-use/main/install.
 macOS only (uses the Keychain for the vault key and chrome-use's macOS cookie
 decryption).
 
+## Upgrade
+
+When any `cookie-use` command prints `cookie-use X is available`, tell the user
+and offer to run `cookie-use upgrade` (it updates the CLI and this skill). Check
+without changing anything: `cookie-use upgrade --check`. The user may also just
+say "升级 cookie-use" / "upgrade cookie-use".
+
+If the skill came from somewhere `upgrade` can't refresh:
+- Claude Code plugin: `claude plugin update cookie-use@leeguooooo-plugins`
+- Whole family: `curl -fsSL https://raw.githubusercontent.com/leeguooooo/plugins/main/upgrade-use-family.sh | sh`
+
 ## Mental model
 
 An **account** is one stored session for one site: its full cross-domain cookie
@@ -49,7 +60,7 @@ plaintext, and `list`/`show` never print them.
 ```bash
 # Capture a logged-in session from a Chrome profile (any site).
 cookie-use add --from-profile "<profile>" --site "<domain[,domain]>" [--id <id>] [--label <l>]
-#   <profile> = directory name ("Profile 14"), display name ("Davian"), or "auto".
+#   <profile> = directory name ("Profile 14"), display name ("Personal"), or "auto".
 #   --with-localstorage  also snapshot the primary origin's localStorage
 #                        (one in-browser read; for SPAs that keep token/user
 #                        info in localStorage, not cookies).
@@ -122,6 +133,8 @@ silently.
 - `COOKIE_USE_VAULT` — override the vault file path (multiple isolated vaults,
   headless hosts, tests). Defaults to `~/.cookie-use/vault.enc`.
 - `CHROME_USE_BIN` — path to the `chrome-use` binary if not on `PATH`.
+- `COOKIE_USE_NO_UPDATE_CHECK=1` (or the family-wide `USE_NO_UPDATE_CHECK=1`)
+  — no daily "new version" check or stderr notice. Also off when `CI` is set.
 
 ## Targets
 
@@ -138,17 +151,17 @@ silently.
 Bulk-import every logged-in profile, then use one:
 
 ```bash
-cookie-use add --from-profile "花月社" --site "chatgpt.com,openai.com" --id chatgpt/huayue
-cookie-use add --from-profile "Davian" --site "claude.ai,anthropic.com" --id claude/davian
+cookie-use add --from-profile "Work" --site "chatgpt.com,openai.com" --id chatgpt/work
+cookie-use add --from-profile "Personal" --site "claude.ai,anthropic.com" --id claude/personal
 cookie-use list
-cookie-use use chatgpt/huayue --target isolated      # opens ChatGPT logged in as that account
+cookie-use use chatgpt/work --target isolated      # opens ChatGPT logged in as that account
 ```
 
 Apply an account into the user's real Chrome (drive their live browser):
 
 ```bash
 chrome-use extension connect                 # connect a session to the real Chrome
-cookie-use use claude/davian --target session:default
+cookie-use use claude/personal --target session:default
 ```
 
 Reuse a production/test login on a local dev server (cross-origin testing). The

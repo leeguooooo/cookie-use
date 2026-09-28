@@ -1,6 +1,8 @@
 #!/bin/sh
 # cookie-use installer — downloads the latest release binary (no npm, no token).
 #   curl -fsSL https://raw.githubusercontent.com/leeguooooo/cookie-use/main/install.sh | sh
+# Env: COOKIE_USE_BIN_DIR=<dir>  install there instead of ~/.local/bin
+#      (`cookie-use upgrade` passes the running binary's directory).
 set -e
 
 REPO="leeguooooo/cookie-use"
@@ -50,9 +52,17 @@ if curl -fsSL "${url}.sha256" -o "$tmp/${BIN}.tar.gz.sha256" 2>/dev/null; then
   echo "checksum ok"
 fi
 
-dest="${HOME}/.local/bin"
+dest="${COOKIE_USE_BIN_DIR:-${HOME}/.local/bin}"
 mkdir -p "$dest"
-install -m 0755 "$tmp/${BIN}" "$dest/${BIN}"
+# Stage next to the target, then rename over it: the swap is atomic, a failed
+# copy never leaves a half-written binary, and the running binary's inode is
+# left untouched (overwriting it in place invalidates its code signature).
+install -m 0755 "$tmp/${BIN}" "$dest/.${BIN}.new.$$"
+if ! mv -f "$dest/.${BIN}.new.$$" "$dest/${BIN}"; then
+  rm -f "$dest/.${BIN}.new.$$"
+  echo "could not replace ${dest}/${BIN}" >&2
+  exit 1
+fi
 
 echo "installed ${BIN} -> ${dest}/${BIN}"
 case ":$PATH:" in

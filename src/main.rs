@@ -11,6 +11,7 @@ mod fingerprint;
 mod keychain;
 mod runner;
 mod share;
+mod upgrade;
 mod vault;
 
 use anyhow::{anyhow, Context, Result};
@@ -209,12 +210,35 @@ enum Cmd {
     Rm { id: String },
     /// Rename an account id.
     Rename { id: String, new_id: String },
+    /// Upgrade cookie-use to the latest GitHub release and refresh the skill.
+    /// Exit 0 on success (or already current), 2 when the check or download failed.
+    Upgrade {
+        /// Change nothing: print `cookie-use <current> -> <latest>` or
+        /// `cookie-use <current> is up to date` (`--json` for the same as JSON).
+        #[arg(long)]
+        check: bool,
+    },
+    /// Daily update check, run detached by the notice (internal).
+    #[command(name = "__update-check", hide = true)]
+    UpdateCheck,
 }
 
 fn main() {
     let cli = Cli::parse();
     let json = cli.json;
-    if let Err(e) = run(cli) {
+    // clap has already handled (and exited for) --version and --help here.
+    match cli.cmd {
+        Cmd::Upgrade { check } => upgrade::run_upgrade(check, json),
+        Cmd::UpdateCheck => return upgrade::run_update_check(),
+        // In --json mode the notice waits until the command succeeded: on
+        // failure stderr must be exactly the error envelope the GUI decodes.
+        _ => upgrade::maybe_notify_update(!json),
+    }
+    let result = run(cli);
+    if json && result.is_ok() {
+        upgrade::print_notice();
+    }
+    if let Err(e) = result {
         if json {
             // Uniform error envelope on stderr so a GUI can parse failures
             // (exit codes stay coarse — always 1).
@@ -343,6 +367,7 @@ fn run(cli: Cli) -> Result<()> {
         Cmd::Revoke { id } => cmd_rm(&id, json),
         Cmd::Wipe { yes } => cmd_wipe(yes, json),
         Cmd::Rename { id, new_id } => cmd_rename(&id, &new_id, json),
+        Cmd::Upgrade { .. } | Cmd::UpdateCheck => unreachable!("dispatched in main"),
     }
 }
 

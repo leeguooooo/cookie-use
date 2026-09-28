@@ -5,6 +5,17 @@ All notable changes to cookie-use are documented here. Versions follow semver.
 ## [Unreleased]
 
 ### Added
+- **`upgrade` / `upgrade --check` / `upgrade --json`** (the *-use family
+  convention). `upgrade` reinstalls the latest GitHub release through
+  `install.sh` into the running binary's directory, then refreshes the skill:
+  Claude Code plugin (`claude plugin update`), git checkout (`git pull
+  --ff-only`), or prints `npx skills update cookie-use` for a copied folder.
+  `--check` / `--json` change nothing. Exit 2 when the check or download fails.
+- **Daily "new version" notice** on stderr, at most once a day (cache in
+  `${XDG_CACHE_HOME:-~/.cache}/cookie-use/update-check.json`, 2 s timeout in a
+  detached child). Off with `CI`, `COOKIE_USE_NO_UPDATE_CHECK` or
+  `USE_NO_UPDATE_CHECK`.
+- `install.sh` honours `COOKIE_USE_BIN_DIR`.
 - **`fingerprint <id>` / `fingerprint --all`** — export a **hash-only** fingerprint
   of an account's session cookies (SHA-256 of each cookie value, never the value)
   so a separate tool such as `chrome-use` can verify "is the live browser session

@@ -52,7 +52,9 @@ jobs:
   # 且脚本装完会 xattr -cr）。
   dmg:
     name: Build and publish CookieUse.dmg
-    runs-on: macos-14
+    # The app targets macOS 26 and the project is Xcode format 77: macos-14's
+    # Xcode 15 can open neither (the v0.4.0 dmg build failed exactly there).
+    runs-on: macos-26
     steps:
       - uses: actions/checkout@v5
 

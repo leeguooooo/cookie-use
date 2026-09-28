@@ -60,7 +60,7 @@ plaintext, and `list`/`show` never print them.
 ```bash
 # Capture a logged-in session from a Chrome profile (any site).
 cookie-use add --from-profile "<profile>" --site "<domain[,domain]>" [--id <id>] [--label <l>]
-#   <profile> = directory name ("Profile 14"), display name ("Davian"), or "auto".
+#   <profile> = directory name ("Profile 14"), display name ("Personal"), or "auto".
 #   --with-localstorage  also snapshot the primary origin's localStorage
 #                        (one in-browser read; for SPAs that keep token/user
 #                        info in localStorage, not cookies).
@@ -151,17 +151,17 @@ silently.
 Bulk-import every logged-in profile, then use one:
 
 ```bash
-cookie-use add --from-profile "花月社" --site "chatgpt.com,openai.com" --id chatgpt/huayue
-cookie-use add --from-profile "Davian" --site "claude.ai,anthropic.com" --id claude/davian
+cookie-use add --from-profile "Work" --site "chatgpt.com,openai.com" --id chatgpt/work
+cookie-use add --from-profile "Personal" --site "claude.ai,anthropic.com" --id claude/personal
 cookie-use list
-cookie-use use chatgpt/huayue --target isolated      # opens ChatGPT logged in as that account
+cookie-use use chatgpt/work --target isolated      # opens ChatGPT logged in as that account
 ```
 
 Apply an account into the user's real Chrome (drive their live browser):
 
 ```bash
 chrome-use extension connect                 # connect a session to the real Chrome
-cookie-use use claude/davian --target session:default
+cookie-use use claude/personal --target session:default
 ```
 
 Reuse a production/test login on a local dev server (cross-origin testing). The

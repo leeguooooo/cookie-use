@@ -50,19 +50,25 @@ fn now_secs() -> u64 {
 // Versions and the release lookup
 // ---------------------------------------------------------------------------
 
-/// `1.2.3`, `v1.2.3`, `1.2.3-rc.1` -> `(1, 2, 3)`; pre-release/build suffixes
-/// are ignored.
-fn parse_version(v: &str) -> Option<(u64, u64, u64)> {
-    let core = v.trim().trim_start_matches('v');
-    let core = core.split(['-', '+']).next().unwrap_or(core);
+/// `1.2.3`, `v1.2.3`, `1.2.3-rc.1` -> `(1, 2, 3, is_release)`. A pre-release
+/// sorts below the release with the same core (`1.2.3-rc.1 < 1.2.3`); build
+/// metadata is ignored.
+fn parse_version(v: &str) -> Option<(u64, u64, u64, bool)> {
+    let v = v.trim().trim_start_matches('v');
+    let v = v.split('+').next().unwrap_or(v);
+    let (core, pre) = match v.split_once('-') {
+        Some((core, pre)) => (core, !pre.is_empty()),
+        None => (v, false),
+    };
     let mut parts = core.split('.');
     let major = parts.next()?.parse().ok()?;
     let minor = parts.next().unwrap_or("0").parse().ok()?;
     let patch = parts.next().unwrap_or("0").parse().ok()?;
-    Some((major, minor, patch))
+    Some((major, minor, patch, !pre))
 }
 
-/// Is `latest` strictly newer than `current`?
+/// Is `latest` strictly newer than `current`? Pre-releases of the same core
+/// are not ordered against each other (never "newer").
 fn is_newer(latest: &str, current: &str) -> bool {
     matches!((parse_version(latest), parse_version(current)), (Some(l), Some(c)) if l > c)
 }
@@ -187,8 +193,14 @@ fn write_cache(path: &Path, cache: &UpdateCache) {
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
+    // Write a sibling temp file and rename it over the cache, so a concurrent
+    // reader never sees a truncated file (which would read as "never checked"
+    // and spawn another check).
     if let Ok(body) = serde_json::to_string(cache) {
-        let _ = std::fs::write(path, body);
+        let tmp = path.with_extension(format!("json.{}.tmp", std::process::id()));
+        if std::fs::write(&tmp, body).is_ok() && std::fs::rename(&tmp, path).is_err() {
+            let _ = std::fs::remove_file(&tmp);
+        }
     }
 }
 
@@ -214,15 +226,18 @@ fn write_notice(err: &mut dyn Write, latest: &str, current: &str) {
 
 /// Called after argument parsing for every command except `upgrade` (clap
 /// has already exited for `--version` / `--help`). Prints the notice to
-/// **stderr** from the cache, and when the cache is a day old refreshes it in
-/// a detached child so the command never waits on the network.
-pub fn maybe_notify_update() {
+/// **stderr** from the cache (unless `print` is false), and when the cache is
+/// a day old refreshes it in a detached child so the command never waits on
+/// the network.
+pub fn maybe_notify_update(print: bool) {
     if update_check_disabled(|k| std::env::var_os(k)) {
         return;
     }
     let path = cache_path();
     let cache = read_cache(&path);
-    write_notice(&mut std::io::stderr(), &cache.latest, CURRENT_VERSION);
+    if print {
+        write_notice(&mut std::io::stderr(), &cache.latest, CURRENT_VERSION);
+    }
 
     let now = now_secs();
     if check_due(&cache, now) {
@@ -244,6 +259,20 @@ pub fn maybe_notify_update() {
                 .spawn();
         }
     }
+}
+
+/// The notice alone, from the cache, with no refresh. `--json` runs print it
+/// only after the command succeeded, so on failure stderr holds nothing but
+/// the `{"error": ...}` envelope the GUI decodes.
+pub fn print_notice() {
+    if update_check_disabled(|k| std::env::var_os(k)) {
+        return;
+    }
+    write_notice(
+        &mut std::io::stderr(),
+        &read_cache(&cache_path()).latest,
+        CURRENT_VERSION,
+    );
 }
 
 /// The detached `__update-check` child: fetch with a 2 s timeout and cache.
@@ -615,6 +644,14 @@ mod tests {
         assert!(!is_newer("0.3.0", "0.3.0"));
         assert!(!is_newer("0.2.9", "0.3.0"));
         assert!(!is_newer("0.3.0-rc.1", "0.3.0"));
+        assert!(is_newer("0.10.0", "0.9.0"));
+        assert!(
+            is_newer("0.3.0", "0.3.0-rc.1"),
+            "release beats its pre-release"
+        );
+        assert!(is_newer("0.3.1-rc.1", "0.3.0"));
+        assert!(!is_newer("0.3.0-rc.2", "0.3.0-rc.1"));
+        assert!(!is_newer("0.3.0+build.5", "0.3.0"));
         assert!(!is_newer("", "0.3.0"));
         assert!(!is_newer("garbage", "0.3.0"));
     }

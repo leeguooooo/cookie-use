@@ -230,9 +230,15 @@ fn main() {
     match cli.cmd {
         Cmd::Upgrade { check } => upgrade::run_upgrade(check, json),
         Cmd::UpdateCheck => return upgrade::run_update_check(),
-        _ => upgrade::maybe_notify_update(),
+        // In --json mode the notice waits until the command succeeded: on
+        // failure stderr must be exactly the error envelope the GUI decodes.
+        _ => upgrade::maybe_notify_update(!json),
     }
-    if let Err(e) = run(cli) {
+    let result = run(cli);
+    if json && result.is_ok() {
+        upgrade::print_notice();
+    }
+    if let Err(e) = result {
         if json {
             // Uniform error envelope on stderr so a GUI can parse failures
             // (exit codes stay coarse — always 1).

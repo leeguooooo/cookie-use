@@ -54,7 +54,15 @@ fi
 
 dest="${COOKIE_USE_BIN_DIR:-${HOME}/.local/bin}"
 mkdir -p "$dest"
-install -m 0755 "$tmp/${BIN}" "$dest/${BIN}"
+# Stage next to the target, then rename over it: the swap is atomic, a failed
+# copy never leaves a half-written binary, and the running binary's inode is
+# left untouched (overwriting it in place invalidates its code signature).
+install -m 0755 "$tmp/${BIN}" "$dest/.${BIN}.new.$$"
+if ! mv -f "$dest/.${BIN}.new.$$" "$dest/${BIN}"; then
+  rm -f "$dest/.${BIN}.new.$$"
+  echo "could not replace ${dest}/${BIN}" >&2
+  exit 1
+fi
 
 echo "installed ${BIN} -> ${dest}/${BIN}"
 case ":$PATH:" in

@@ -233,3 +233,18 @@ fn fresh_cache_is_not_rechecked_and_stale_cache_is_bumped_even_offline() {
     assert!(cache["checked_at"].as_u64().unwrap() > 1);
     assert_eq!(cache["latest"], "0.0.1");
 }
+
+#[test]
+fn json_failure_stderr_is_only_the_error_envelope() {
+    let sb = Sandbox::new();
+    sb.seed_cache(now(), "999.0.0");
+    let out = sb
+        .cmd(&["rm", "no-such-account", "--json"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let v: serde_json::Value = serde_json::from_slice(&out.stderr).unwrap_or_else(|e| {
+        panic!("{e}: {}", String::from_utf8_lossy(&out.stderr));
+    });
+    assert!(v["error"].is_string(), "{v}");
+}

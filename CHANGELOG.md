@@ -4,6 +4,8 @@ All notable changes to cookie-use are documented here. Versions follow semver.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-28
+
 ### Added
 - **`upgrade` / `upgrade --check` / `upgrade --json`** (the *-use family
   convention). `upgrade` reinstalls the latest GitHub release through
@@ -16,6 +18,10 @@ All notable changes to cookie-use are documented here. Versions follow semver.
   detached child). Off with `CI`, `COOKIE_USE_NO_UPDATE_CHECK` or
   `USE_NO_UPDATE_CHECK`.
 - `install.sh` honours `COOKIE_USE_BIN_DIR`.
+
+## [0.3.0] - 2026-07-02
+
+### Added
 - **`fingerprint <id>` / `fingerprint --all`** — export a **hash-only** fingerprint
   of an account's session cookies (SHA-256 of each cookie value, never the value)
   so a separate tool such as `chrome-use` can verify "is the live browser session

@@ -66,10 +66,10 @@ cookie-use upgrade --json   # the same as JSON, with where the skill is installe
 lives in, then refreshes the skill wherever it finds one: it runs `claude plugin
 update cookie-use@leeguooooo-plugins` for the Claude Code plugin, `git pull
 --ff-only` for a git checkout, and prints `npx skills update cookie-use` for a
-copied folder. Exit code 2 means the check or download failed. Once a day any
-other command checks for a newer release (2 s timeout, cached in
-`${XDG_CACHE_HOME:-~/.cache}/cookie-use/update-check.json`) and prints one line
-to stderr when there is one. `COOKIE_USE_NO_UPDATE_CHECK=1`,
+copied folder. Exit code 2 means the check or download failed. Other commands
+check for a newer release at most once a day, in the background (2 s timeout,
+cached in `${XDG_CACHE_HOME:-~/.cache}/cookie-use/update-check.json`), and
+while one exists print one line to stderr on each run. `COOKIE_USE_NO_UPDATE_CHECK=1`,
 `USE_NO_UPDATE_CHECK=1` or `CI` turn that off.
 
 ### As an agent skill (skills.sh)

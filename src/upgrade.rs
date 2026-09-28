@@ -8,8 +8,8 @@
 //!   latest plus the installed skills.
 //! - Exit 0 on success (upgraded, already current, or a check that ran), 2 when
 //!   the check or the download failed.
-//! - Other commands print one stderr line, at most once a day, when a newer
-//!   release is cached.
+//! - Other commands check GitHub at most once a day (in a detached child) and,
+//!   while the cached release is newer, print one stderr line per run.
 
 use serde::{Deserialize, Serialize};
 use std::ffi::OsString;
@@ -506,8 +506,9 @@ fn record_latest(latest: &str) {
 }
 
 /// The version the binary now on disk reports (after install.sh replaced it).
-fn installed_version() -> Option<String> {
-    let out = Command::new(std::env::current_exe().ok()?)
+/// `exe` is resolved before install.sh replaces the file.
+fn installed_version(exe: Option<&Path>) -> Option<String> {
+    let out = Command::new(exe?)
         .arg("--version")
         .stdin(Stdio::null())
         .stderr(Stdio::null())
@@ -569,21 +570,20 @@ pub fn run_upgrade(check: bool, json: bool) -> ! {
         ),
     }
 
+    let exe = std::env::current_exe()
+        .ok()
+        .map(|p| p.canonicalize().unwrap_or(p));
     let mut cmd = Command::new("sh");
     cmd.arg("-c").arg(format!("curl -fsSL {INSTALL_URL} | sh"));
     // Replace the binary where it is, not a second copy in ~/.local/bin.
-    if let Some(dir) = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.canonicalize().ok())
-        .and_then(|p| p.parent().map(Path::to_path_buf))
-    {
+    if let Some(dir) = exe.as_deref().and_then(Path::parent) {
         cmd.env("COOKIE_USE_BIN_DIR", dir);
     }
     if !cmd.status().map(|s| s.success()).unwrap_or(false) {
         eprintln!("upgrade failed. Install manually:\n  curl -fsSL {INSTALL_URL} | sh");
         exit(2);
     }
-    let now = installed_version().unwrap_or_else(|| "unknown".to_string());
+    let now = installed_version(exe.as_deref()).unwrap_or_else(|| "unknown".to_string());
     if now == CURRENT_VERSION {
         println!("{NAME} {now} (unchanged)");
     } else {

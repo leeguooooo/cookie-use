@@ -1,6 +1,8 @@
 #!/bin/sh
 # cookie-use installer — downloads the latest release binary (no npm, no token).
 #   curl -fsSL https://raw.githubusercontent.com/leeguooooo/cookie-use/main/install.sh | sh
+# Env: COOKIE_USE_BIN_DIR=<dir>  install there instead of ~/.local/bin
+#      (`cookie-use upgrade` passes the running binary's directory).
 set -e
 
 REPO="leeguooooo/cookie-use"
@@ -50,7 +52,7 @@ if curl -fsSL "${url}.sha256" -o "$tmp/${BIN}.tar.gz.sha256" 2>/dev/null; then
   echo "checksum ok"
 fi
 
-dest="${HOME}/.local/bin"
+dest="${COOKIE_USE_BIN_DIR:-${HOME}/.local/bin}"
 mkdir -p "$dest"
 install -m 0755 "$tmp/${BIN}" "$dest/${BIN}"
 

@@ -54,6 +54,24 @@ curl -fsSL https://raw.githubusercontent.com/leeguooooo/cookie-use/main/install.
 
 Requires `chrome-use` on PATH (`curl -fsSL https://raw.githubusercontent.com/leeguooooo/chrome-use/main/install.sh | sh`).
 
+### Upgrade
+
+```sh
+cookie-use upgrade          # install the latest release, then refresh the skill
+cookie-use upgrade --check  # change nothing: "cookie-use 0.3.0 -> 0.3.1" or "... is up to date"
+cookie-use upgrade --json   # the same as JSON, with where the skill is installed
+```
+
+`upgrade` reinstalls through `install.sh` into the directory the running binary
+lives in, then refreshes the skill wherever it finds one: it runs `claude plugin
+update cookie-use@leeguooooo-plugins` for the Claude Code plugin, `git pull
+--ff-only` for a git checkout, and prints `npx skills update cookie-use` for a
+copied folder. Exit code 2 means the check or download failed. Once a day any
+other command checks for a newer release (2 s timeout, cached in
+`${XDG_CACHE_HOME:-~/.cache}/cookie-use/update-check.json`) and prints one line
+to stderr when there is one. `COOKIE_USE_NO_UPDATE_CHECK=1`,
+`USE_NO_UPDATE_CHECK=1` or `CI` turn that off.
+
 ### As an agent skill (skills.sh)
 
 Install the cookie-use skill into your agent so it knows how to drive the CLI

@@ -7,6 +7,11 @@
 # could advertise a version whose binaries do not exist yet.
 #   scripts/release.sh [--dry-run] 0.4.1
 set -eu
+run_ok() {  # run_ok <run-id> [-R owner/repo]: wait until the run completes (gh run watch can drop on a network error), then require success
+  _r=$1; shift
+  until [ "$(gh run view "$_r" "$@" --json status -q .status 2>/dev/null)" = completed ]; do gh run watch "$_r" "$@" >/dev/null 2>&1 || sleep 15; done
+  [ "$(gh run view "$_r" "$@" --json conclusion -q .conclusion)" = success ]
+}
 DRY=
 [ "${1:-}" = --dry-run ] && { DRY=1; shift; }
 V=${1:?usage: scripts/release.sh [--dry-run] <version>}
@@ -53,7 +58,7 @@ for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
 done
 [ -n "$RUN" ] || { echo "error: no release-binaries run for v$V; see https://github.com/$REPO/actions" >&2; retry "<run-id>"; }
 echo "waiting for release build $RUN"
-gh run watch "$RUN" -R "$REPO" --exit-status >/dev/null || { echo "error: release build $RUN failed" >&2; retry "$RUN"; }
+run_ok "$RUN" -R "$REPO" || { echo "error: release build $RUN failed" >&2; retry "$RUN"; }
 echo "released https://github.com/$REPO/releases/tag/v$V"
 git push -q origin main || die "binaries are out but main was not pushed; git pull --no-rebase && git push origin main, then gh workflow run auto-sync-versions.yml -R $MARKETPLACE"
 
@@ -66,6 +71,6 @@ for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
   RUN=$(gh run list -R "$MARKETPLACE" -w auto-sync-versions.yml -e workflow_dispatch -L 1 --json databaseId -q '.[0].databaseId')
   [ "$RUN" != "$PREV" ] && break
 done
-gh run watch "$RUN" -R "$MARKETPLACE" --exit-status >/dev/null && echo "marketplace synced" || echo "warn: marketplace sync run $RUN failed; the hourly run will retry"
+run_ok "$RUN" -R "$MARKETPLACE" && echo "marketplace synced" || echo "warn: marketplace sync run $RUN failed; the hourly run will retry"
 gh api "repos/$MARKETPLACE/contents/.claude-plugin/marketplace.json" -q .content | base64 -d \
   | python3 -c "import json,sys; print('marketplace cookie-use:', next(p['version'] for p in json.load(sys.stdin)['plugins'] if p['name']=='cookie-use'))"

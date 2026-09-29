@@ -4,6 +4,23 @@ All notable changes to cookie-use are documented here. Versions follow semver.
 
 ## [Unreleased]
 
+### Changed
+- **`upgrade` updates only the CLI by default; `--skills` opts in to refreshing
+  the skill** (plugin / git checkout). Without it the skill copies are listed
+  with their refresh command and left alone.
+- **`install.sh` requires the `.sha256` sidecar** (a missing or malformed one
+  fails the install), verifies it before unpacking, and runs the new binary
+  before swapping it in.
+
+### Added
+- `upgrade --tag vX.Y.Z` and `COOKIE_USE_VERSION=vX.Y.Z` for install.sh: install
+  one exact release; the new binary must report that version or nothing is
+  replaced.
+- `upgrade` detects how the CLI was installed and refuses to replace a
+  Homebrew, cargo, npm or source-build binary (exit 1, prints the right
+  command). `--json` gains `install_channel`, `target` and `app` (the
+  separately installed CookieUse.app version, never touched).
+
 ## [0.4.0] - 2026-09-28
 
 ### Added

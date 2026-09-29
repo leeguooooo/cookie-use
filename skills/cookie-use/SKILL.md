@@ -36,9 +36,12 @@ decryption).
 ## Upgrade
 
 When any `cookie-use` command prints `cookie-use X is available`, tell the user
-and offer to run `cookie-use upgrade` (it updates the CLI and this skill). Check
-without changing anything: `cookie-use upgrade --check`. The user may also just
-say "升级 cookie-use" / "upgrade cookie-use".
+and offer to run `cookie-use upgrade` (it updates the CLI; add `--skills` to also
+refresh this skill). Check without changing anything: `cookie-use upgrade --check`
+(`--json` for machine output). `--tag vX.Y.Z` installs one exact release. The user
+may also just say "升级 cookie-use" / "upgrade cookie-use". Upgrading never opens
+the vault or needs its key; a Homebrew/cargo/source install is refused with the
+command to use instead.
 
 If the skill came from somewhere `upgrade` can't refresh:
 - Claude Code plugin: `claude plugin update cookie-use@leeguooooo-plugins`

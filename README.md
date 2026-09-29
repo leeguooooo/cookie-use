@@ -57,19 +57,32 @@ Requires `chrome-use` on PATH (`curl -fsSL https://raw.githubusercontent.com/lee
 ### Upgrade
 
 ```sh
-cookie-use upgrade          # install the latest release, then refresh the skill
-cookie-use upgrade --check  # change nothing: "cookie-use 0.3.0 -> 0.3.1" or "... is up to date"
-cookie-use upgrade --json   # the same as JSON, with where the skill is installed
+cookie-use upgrade                 # install the latest release of the CLI (skills are only listed)
+cookie-use upgrade --skills        # ...and refresh the cookie-use skill (plugin / git checkout)
+cookie-use upgrade --tag v0.4.0    # install that exact release (also downgrades)
+cookie-use upgrade --check         # change nothing: "cookie-use 0.3.0 -> 0.3.1" or "... is up to date"
+cookie-use upgrade --json          # the same as JSON, with the install channel and skill copies
 ```
 
 `upgrade` reinstalls through `install.sh` into the directory the running binary
-lives in, then refreshes the skill wherever it finds one: it runs `claude plugin
-update cookie-use@leeguooooo-plugins` for the Claude Code plugin, `git pull
---ff-only` for a git checkout, and prints `npx skills update cookie-use` for a
-copied folder. Exit code 2 means the check or download failed. Other commands
-check for a newer release at most once a day, in the background (2 s timeout,
-cached in `${XDG_CACHE_HOME:-~/.cache}/cookie-use/update-check.json`), and
-while one exists print one line to stderr on each run. `COOKIE_USE_NO_UPDATE_CHECK=1`,
+lives in. The release tarball must match its published `.sha256` (a missing
+checksum is a failure), the new binary must run and report the expected version,
+and it replaces the old one with a single rename, so any failure leaves the
+current binary as it was. A binary owned by Homebrew, cargo or a source build is
+not touched; `upgrade` prints the command for that channel and exits 1. The
+upgrade never opens the vault, asks for its key or touches browsers. The
+CookieUse.app GUI is a separate install and is only reported
+(`install-app.sh` updates it).
+
+Skills are opt-in: plain `upgrade` lists each copy of the skill and how to
+refresh it; `--skills` runs `claude plugin update cookie-use@leeguooooo-plugins`
+for the Claude Code plugin and `git pull --ff-only` for a cookie-use git
+checkout, and prints `npx skills update cookie-use` for a copied folder (never
+re-copied, so local edits stay). Exit code 2 means the check, download or
+verification failed. Other commands check for a newer release at most once a
+day, in the background (2 s timeout, cached in
+`${XDG_CACHE_HOME:-~/.cache}/cookie-use/update-check.json`), and while one
+exists print one line to stderr on each run. `COOKIE_USE_NO_UPDATE_CHECK=1`,
 `USE_NO_UPDATE_CHECK=1` or `CI` turn that off.
 
 ### As an agent skill (skills.sh)

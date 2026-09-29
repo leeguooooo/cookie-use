@@ -2,12 +2,15 @@
 //! *-use family convention
 //! (https://github.com/leeguooooo/plugins/blob/main/docs/upgrade.md):
 //!
-//! - `upgrade` re-runs install.sh (the GitHub Release binary) into the running
-//!   binary's directory, then refreshes every installed copy of the skill.
+//! - `upgrade` re-runs install.sh (the sha256-verified GitHub Release binary,
+//!   swapped in by rename) into the running binary's directory, pinned to the
+//!   target version. A brew / cargo / npm / source-build binary is refused.
+//! - Skills are opt-in: `--skills` refreshes cookie-use's own copies; without
+//!   it they are only listed. `--tag vX.Y.Z` installs one exact release.
 //! - `upgrade --check` / `upgrade --json` change nothing and report current vs
-//!   latest plus the installed skills.
+//!   latest, the install channel, the installed skills and the GUI app.
 //! - Exit 0 on success (upgraded, already current, or a check that ran), 2 when
-//!   the check or the download failed.
+//!   the check, download or verification failed, 1 when refused or unfinished.
 //! - Other commands check GitHub at most once a day (in a detached child) and,
 //!   while the cached release is newer, print one stderr line per run.
 
@@ -427,53 +430,217 @@ fn on_path(program: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn refresh_skills(skills: &[SkillInstall]) {
+fn channel_label(c: Channel) -> &'static str {
+    match c {
+        Channel::ClaudePlugin => "claude-plugin",
+        Channel::Git => "git",
+        Channel::Copied => "copied",
+    }
+}
+
+/// Without `--skills`: say where each copy is and how to refresh it, touch nothing.
+fn list_skills(skills: &[SkillInstall]) {
+    for s in skills {
+        println!(
+            "skill ({}) {}: not refreshed; pass --skills or run: {}",
+            channel_label(s.channel),
+            s.path,
+            s.update
+        );
+    }
+}
+
+/// `--skills`: refresh cookie-use's own copies only. Returns false when one
+/// that could be refreshed here failed.
+fn refresh_skills(skills: &[SkillInstall]) -> bool {
+    let mut ok = true;
+    if skills.is_empty() {
+        println!("skill: no installed copy of the cookie-use skill found");
+    }
     for skill in skills {
         match skill.channel {
             Channel::Git => {
                 match Command::new("git")
                     .args(["-C", &skill.path, "pull", "--ff-only", "-q"])
                     .stdin(Stdio::null())
+                    // Never block on a credential prompt.
+                    .env("GIT_TERMINAL_PROMPT", "0")
                     .output()
                 {
                     Ok(o) if o.status.success() => {
                         println!("skill (git) {}: pulled", skill.path)
                     }
-                    Ok(o) => eprintln!(
-                        "skill (git) {}: not updated, `git pull --ff-only` failed: {}",
-                        skill.path,
-                        String::from_utf8_lossy(&o.stderr).trim()
-                    ),
-                    Err(e) => eprintln!(
-                        "skill (git) {}: not updated, could not run git: {e}",
-                        skill.path
-                    ),
+                    Ok(o) => {
+                        ok = false;
+                        eprintln!(
+                            "skill (git) {}: not updated (local changes or diverged?), not forcing: {}",
+                            skill.path,
+                            String::from_utf8_lossy(&o.stderr).trim()
+                        )
+                    }
+                    Err(e) => {
+                        ok = false;
+                        eprintln!(
+                            "skill (git) {}: not updated, could not run git: {e}",
+                            skill.path
+                        )
+                    }
                 }
             }
-            Channel::ClaudePlugin if on_path("claude") => {
-                let ok = Command::new("claude")
+            Channel::ClaudePlugin => {
+                println!("skill (claude-plugin): {}", skill.update);
+                if !on_path("claude") {
+                    println!("skill (claude-plugin): claude is not on PATH; run the command above");
+                    continue;
+                }
+                let done = Command::new("claude")
                     .args(["plugin", "update", PLUGIN_ID])
                     .stdin(Stdio::null())
                     .status()
                     .map(|s| s.success())
                     .unwrap_or(false);
-                if ok {
-                    println!("skill (Claude Code plugin): updated; restart Claude Code or run /reload-plugins");
+                if done {
+                    println!("skill (claude-plugin): updated; restart Claude Code or run /reload-plugins");
                 } else {
-                    eprintln!("skill (Claude Code plugin): `{}` failed", skill.update);
+                    ok = false;
+                    eprintln!(
+                        "skill (claude-plugin): `{}` failed; run it yourself",
+                        skill.update
+                    );
                 }
             }
-            Channel::ClaudePlugin => {
-                println!("skill (Claude Code plugin): run `{}`", skill.update)
-            }
-            Channel::Copied => {
-                println!(
-                    "skill {}: copied folder, run `{}`",
-                    skill.path, skill.update
-                )
-            }
+            // Copied folders may carry local edits and belong to the skills
+            // tool that made them; never re-copy behind the user's back.
+            Channel::Copied => println!(
+                "skill (copied) {}: run `{}` to refresh it",
+                skill.path, skill.update
+            ),
         }
     }
+    ok
+}
+
+// ---------------------------------------------------------------------------
+// Install channel
+// ---------------------------------------------------------------------------
+
+/// How the running binary got here. Only a release binary (install.sh or an
+/// unpacked tarball) is upgraded in place; anything a package manager or a
+/// build owns is left to it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct InstallChannel {
+    channel: &'static str,
+    path: String,
+    upgradable: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    hint: Option<String>,
+}
+
+fn install_channel(exe: &Path, cargo_bin: Option<&Path>) -> InstallChannel {
+    let path = exe.display().to_string();
+    let dir = exe.parent().unwrap_or_else(|| Path::new("/"));
+    let comps: Vec<String> = dir
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .collect();
+    let mk = |channel, hint: Option<String>| InstallChannel {
+        channel,
+        path: path.clone(),
+        upgradable: hint.is_none(),
+        hint,
+    };
+    if comps.iter().any(|c| c == "Cellar")
+        || path.starts_with("/opt/homebrew/")
+        || path.starts_with("/home/linuxbrew/")
+    {
+        return mk("brew", Some(format!("brew upgrade {NAME}")));
+    }
+    if comps.iter().any(|c| c == "node_modules") {
+        return mk(
+            "npm",
+            Some(format!(
+                "installed by npm; upgrade it with npm (e.g. npm update -g {NAME})"
+            )),
+        );
+    }
+    let in_target = comps.len() >= 2
+        && comps[..comps.len() - 1].iter().any(|c| c == "target")
+        && matches!(
+            comps.last().map(String::as_str),
+            Some("debug" | "release" | "deps")
+        );
+    if in_target {
+        return mk(
+            "source",
+            Some("a source build; `git pull` the checkout and `cargo build --release`".to_string()),
+        );
+    }
+    if cargo_bin.is_some_and(|c| dir == c) {
+        return mk(
+            "cargo",
+            Some(format!(
+                "cargo install --locked --force --git https://github.com/leeguooooo/{NAME}"
+            )),
+        );
+    }
+    mk("release", None)
+}
+
+fn cargo_bin() -> Option<PathBuf> {
+    std::env::var_os("CARGO_HOME")
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|h| h.join(".cargo")))
+        .map(|c| c.join("bin"))
+        .and_then(|p| p.canonicalize().ok())
+}
+
+/// The binary `upgrade` replaces: this one. `COOKIE_USE_UPGRADE_EXE` points
+/// it elsewhere for tests (a temp install), so no test touches a real binary.
+fn running_exe() -> PathBuf {
+    if let Some(p) = std::env::var_os("COOKIE_USE_UPGRADE_EXE").filter(|s| !s.is_empty()) {
+        return PathBuf::from(p);
+    }
+    std::env::current_exe()
+        .map(|p| p.canonicalize().unwrap_or(p))
+        .unwrap_or_else(|_| PathBuf::from(NAME))
+}
+
+/// The CookieUse.app GUI is its own install (install-app.sh) with its own
+/// version; `upgrade` reports it but never touches it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct AppInstall {
+    path: String,
+    version: Option<String>,
+    update: String,
+}
+
+const APP_INSTALL: &str =
+    "curl -fsSL https://raw.githubusercontent.com/leeguooooo/cookie-use/main/install-app.sh | sh";
+
+fn detect_app() -> Option<AppInstall> {
+    let app = std::env::var_os("COOKIE_USE_APP_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/Applications/CookieUse.app"));
+    let plist = app.join("Contents/Info.plist");
+    if !plist.is_file() {
+        return None;
+    }
+    let version = Command::new("plutil")
+        .args(["-extract", "CFBundleShortVersionString", "raw", "-o", "-"])
+        .arg(&plist)
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|v| !v.is_empty());
+    Some(AppInstall {
+        path: app.display().to_string(),
+        version,
+        update: APP_INSTALL.to_string(),
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -487,6 +654,12 @@ struct CheckReport {
     latest: Option<String>,
     update_available: bool,
     skills: Vec<SkillInstall>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    target: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    install_channel: Option<InstallChannel>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    app: Option<AppInstall>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
 }
@@ -506,11 +679,21 @@ fn build_report(
         update_available: latest.as_deref().is_some_and(|l| is_newer(l, current)),
         latest,
         skills,
+        target: None,
+        install_channel: None,
+        app: None,
         error,
     }
 }
 
 fn check_line(report: &CheckReport) -> String {
+    if let Some(target) = &report.target {
+        return if target == &report.current {
+            format!("{NAME} {} is already {target}", report.current)
+        } else {
+            format!("{NAME} {} -> {target} (pinned)", report.current)
+        };
+    }
     match &report.latest {
         Some(latest) if report.update_available => {
             format!("{NAME} {} -> {latest}", report.current)
@@ -534,10 +717,26 @@ fn record_latest(latest: &str) {
     );
 }
 
-/// The version the binary now on disk reports (after install.sh replaced it).
-/// `exe` is resolved before install.sh replaces the file.
-fn installed_version(exe: Option<&Path>) -> Option<String> {
-    let out = Command::new(exe?)
+/// `--tag` value -> bare `X.Y.Z`. Only a plain release version is accepted: it
+/// ends up in a download URL and an environment variable.
+fn parse_tag(tag: &str) -> Result<String, String> {
+    let bare = tag.trim().trim_start_matches('v');
+    let mut parts = bare.split('.');
+    let ok = (0..3).all(|_| {
+        parts
+            .next()
+            .is_some_and(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+    }) && parts.next().is_none();
+    if ok {
+        Ok(bare.to_string())
+    } else {
+        Err(format!("--tag must look like v1.2.3 (got {tag})"))
+    }
+}
+
+/// The version a binary reports (`cookie-use X.Y.Z`).
+fn installed_version(exe: &Path) -> Option<String> {
+    let out = Command::new(exe)
         .arg("--version")
         .stdin(Stdio::null())
         .stderr(Stdio::null())
@@ -549,18 +748,83 @@ fn installed_version(exe: Option<&Path>) -> Option<String> {
         .map(str::to_string)
 }
 
-/// `cookie-use upgrade [--check] [--json]`. Exits the process: 0 on success,
-/// 2 when the check or the download failed.
-pub fn run_upgrade(check: bool, json: bool) -> ! {
+/// Runs install.sh (downloaded to a temp file first, so a truncated download
+/// cannot be run as a partial script) into `dir`, pinned to `version` when known.
+fn run_installer(dir: &Path, version: Option<&str>) -> Result<(), String> {
+    let url = std::env::var("COOKIE_USE_INSTALL_URL")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| INSTALL_URL.to_string());
+    let mut cmd = Command::new("sh");
+    cmd.arg("-c")
+        .arg("set -eu; t=$(mktemp); trap 'rm -f \"$t\"' EXIT; curl -fsSL \"$1\" -o \"$t\"; sh \"$t\"")
+        .arg("sh")
+        .arg(&url)
+        .env("COOKIE_USE_BIN_DIR", dir)
+        .stdin(Stdio::null());
+    match version {
+        Some(v) => cmd.env("COOKIE_USE_VERSION", format!("v{v}")),
+        None => cmd.env_remove("COOKIE_USE_VERSION"),
+    };
+    let status = cmd.status().map_err(|e| format!("could not run sh: {e}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("install.sh failed ({status})"))
+    }
+}
+
+/// The skill and app part of a real (non-check) upgrade, then exit. A skill
+/// refresh that was asked for and failed turns a 0 into 1.
+fn finish(skills: &[SkillInstall], opt_in: bool, app: Option<&AppInstall>, code: i32) -> ! {
+    let skills_ok = if opt_in {
+        refresh_skills(skills)
+    } else {
+        list_skills(skills);
+        true
+    };
+    if let Some(a) = app {
+        println!(
+            "app {} {}: not touched by upgrade (separate install); update with: {}",
+            a.path,
+            a.version.as_deref().unwrap_or("?"),
+            a.update
+        );
+    }
+    exit(if code == 0 && !skills_ok { 1 } else { code });
+}
+
+/// `cookie-use upgrade [--check] [--json] [--skills] [--tag vX.Y.Z]`. Exits
+/// the process: 0 on success (upgraded, already current, a check that ran),
+/// 2 when the check, download or verification failed, 1 when the upgrade was
+/// refused (package-manager/source install) or did not finish.
+///
+/// Never opens the vault, reads the key, touches the Keychain, or talks to a
+/// browser: the only state it writes is the binary and the update-check cache.
+pub fn run_upgrade(check: bool, json: bool, skills_opt_in: bool, tag: Option<String>) -> ! {
+    let pinned = match tag.as_deref().map(parse_tag).transpose() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("{NAME} upgrade: {e}");
+            exit(2);
+        }
+    };
     let skills = detect_skills(&SkillScan::from_env());
+    let exe = running_exe();
+    let channel = install_channel(&exe, cargo_bin().as_deref());
+    let app = detect_app();
     let latest = fetch_latest_version(EXPLICIT_CHECK_TIMEOUT_SECS);
     if let Ok(v) = &latest {
         record_latest(v);
     }
 
     if check || json {
-        let report = build_report(CURRENT_VERSION, latest, skills);
-        let failed = report.error.is_some();
+        let mut report = build_report(CURRENT_VERSION, latest, skills);
+        report.target = pinned.clone();
+        report.install_channel = Some(channel);
+        report.app = app;
+        // A pinned target does not need the latest-release lookup.
+        let failed = report.error.is_some() && report.target.is_none();
         if json {
             println!(
                 "{}",
@@ -572,54 +836,93 @@ pub fn run_upgrade(check: bool, json: bool) -> ! {
             } else {
                 println!("{}", check_line(&report));
             }
+            if let Some(c) = &report.install_channel {
+                if let Some(hint) = &c.hint {
+                    println!(
+                        "  installed via {} ({}): upgrade with {hint}",
+                        c.channel, c.path
+                    );
+                }
+            }
             for s in &report.skills {
-                let channel = serde_json::to_value(s.channel).unwrap_or_default();
                 println!(
                     "  skill ({}) {}  refresh: {}",
-                    channel.as_str().unwrap_or(""),
+                    channel_label(s.channel),
                     s.path,
                     s.update
+                );
+            }
+            if let Some(a) = &report.app {
+                println!(
+                    "  app {} {}  (separate install; update: {})",
+                    a.path,
+                    a.version.as_deref().unwrap_or("?"),
+                    a.update
                 );
             }
         }
         exit(if failed { 2 } else { 0 });
     }
 
-    match &latest {
-        Ok(v) if !is_newer(v, CURRENT_VERSION) => {
-            println!("{NAME} {CURRENT_VERSION} is up to date");
-            refresh_skills(&skills);
-            exit(0);
-        }
-        Ok(v) => println!("upgrading {NAME} {CURRENT_VERSION} -> {v}"),
+    // What to install: the pinned tag, else the latest release when newer.
+    let target: Option<String> = match (&pinned, &latest) {
+        (Some(t), _) => (t != CURRENT_VERSION).then(|| t.clone()),
+        (None, Ok(v)) => is_newer(v, CURRENT_VERSION).then(|| v.clone()),
         // install.sh downloads through releases/latest/download, which is not
-        // rate-limited like the API, so a failed check need not stop us.
-        Err(e) => eprintln!(
-            "could not check the latest release ({e}); reinstalling the latest release anyway"
-        ),
+        // rate-limited like the API, so a failed check need not stop us; the
+        // exact-version check is then skipped (the checksum still applies).
+        (None, Err(e)) => {
+            eprintln!("cli: could not check the latest release ({e}); installing the latest release anyway");
+            Some(String::new())
+        }
+    };
+
+    let Some(target) = target else {
+        match &pinned {
+            Some(t) => println!("cli: {NAME} {CURRENT_VERSION} is already {t}"),
+            None => println!("cli: {NAME} {CURRENT_VERSION} is up to date"),
+        }
+        finish(&skills, skills_opt_in, app.as_ref(), 0);
+    };
+
+    if !channel.upgradable {
+        eprintln!(
+            "cli: {} is installed via {}; not replacing it. Upgrade with: {}",
+            channel.path,
+            channel.channel,
+            channel.hint.as_deref().unwrap_or("its package manager")
+        );
+        finish(&skills, skills_opt_in, app.as_ref(), 1);
     }
 
-    let exe = std::env::current_exe()
-        .ok()
-        .map(|p| p.canonicalize().unwrap_or(p));
-    let mut cmd = Command::new("sh");
-    cmd.arg("-c").arg(format!("curl -fsSL {INSTALL_URL} | sh"));
-    // Replace the binary where it is, not a second copy in ~/.local/bin.
-    if let Some(dir) = exe.as_deref().and_then(Path::parent) {
-        cmd.env("COOKIE_USE_BIN_DIR", dir);
+    let pin = (!target.is_empty()).then_some(target.as_str());
+    match pin {
+        Some(v) => println!("cli: upgrading {NAME} {CURRENT_VERSION} -> {v}"),
+        None => println!("cli: reinstalling the latest {NAME} release"),
     }
-    if !cmd.status().map(|s| s.success()).unwrap_or(false) {
-        eprintln!("upgrade failed. Install manually:\n  curl -fsSL {INSTALL_URL} | sh");
+    let dir = exe.parent().unwrap_or_else(|| Path::new("."));
+    if let Err(e) = run_installer(dir, pin) {
+        eprintln!(
+            "cli: upgrade failed ({e}); {} was left as it was. Install manually:\n  curl -fsSL {INSTALL_URL} | sh",
+            exe.display()
+        );
         exit(2);
     }
-    let now = installed_version(exe.as_deref()).unwrap_or_else(|| "unknown".to_string());
-    if now == CURRENT_VERSION {
-        println!("{NAME} {now} (unchanged)");
-    } else {
-        println!("{NAME} {CURRENT_VERSION} -> {now}");
+    let now = installed_version(&exe).unwrap_or_else(|| "unknown".to_string());
+    if pin.is_some_and(|v| v != now) {
+        eprintln!(
+            "cli: install.sh finished but {} reports {now}, expected {}",
+            exe.display(),
+            target
+        );
+        finish(&skills, skills_opt_in, app.as_ref(), 1);
     }
-    refresh_skills(&skills);
-    exit(0);
+    if now == CURRENT_VERSION {
+        println!("cli: {NAME} {now} (unchanged)");
+    } else {
+        println!("cli: {NAME} {CURRENT_VERSION} -> {now}");
+    }
+    finish(&skills, skills_opt_in, app.as_ref(), 0);
 }
 
 #[cfg(test)]
@@ -838,5 +1141,71 @@ mod tests {
             assert_eq!(git.path, checkout.display().to_string());
         }
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn install_channel_detection() {
+        let cargo = PathBuf::from("/Users/u/.cargo/bin");
+        let c = |p: &str| install_channel(Path::new(p), Some(&cargo));
+        let release = c("/Users/u/.local/bin/cookie-use");
+        assert_eq!(release.channel, "release");
+        assert!(release.upgradable && release.hint.is_none());
+        assert_eq!(c("/usr/local/bin/cookie-use").channel, "release");
+        for brew in [
+            "/opt/homebrew/Cellar/cookie-use/0.4.0/bin/cookie-use",
+            "/usr/local/Cellar/cookie-use/0.4.0/bin/cookie-use",
+            "/opt/homebrew/bin/cookie-use",
+        ] {
+            let b = c(brew);
+            assert_eq!(b.channel, "brew", "{brew}");
+            assert!(!b.upgradable);
+            assert_eq!(b.hint.as_deref(), Some("brew upgrade cookie-use"));
+        }
+        assert_eq!(c("/Users/u/.cargo/bin/cookie-use").channel, "cargo");
+        assert!(!c("/Users/u/.cargo/bin/cookie-use").upgradable);
+        assert_eq!(
+            c("/src/cookie-use/target/release/cookie-use").channel,
+            "source"
+        );
+        assert_eq!(
+            c("/src/cookie-use/target/debug/deps/cookie-use-1a2b").channel,
+            "source"
+        );
+        assert_eq!(
+            c("/usr/local/lib/node_modules/cookie-use/bin/cookie-use").channel,
+            "npm"
+        );
+        // A directory merely named "release" is not a build tree.
+        assert_eq!(c("/opt/release/cookie-use").channel, "release");
+        assert_eq!(
+            install_channel(Path::new("/Users/u/.cargo/bin/cookie-use"), None).channel,
+            "release"
+        );
+    }
+
+    #[test]
+    fn tag_parsing() {
+        assert_eq!(parse_tag("v0.4.0").unwrap(), "0.4.0");
+        assert_eq!(parse_tag("0.10.2").unwrap(), "0.10.2");
+        for bad in [
+            "",
+            "v1.2",
+            "1.2.3.4",
+            "1.2.3-rc.1",
+            "latest",
+            "v1.2.3; rm -rf /",
+            "1..3",
+        ] {
+            assert!(parse_tag(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn pinned_check_line() {
+        let mut r = build_report("0.4.0", Ok("0.5.0".into()), vec![]);
+        r.target = Some("0.3.0".into());
+        assert_eq!(check_line(&r), "cookie-use 0.4.0 -> 0.3.0 (pinned)");
+        r.target = Some("0.4.0".into());
+        assert_eq!(check_line(&r), "cookie-use 0.4.0 is already 0.4.0");
     }
 }

@@ -4,6 +4,8 @@ All notable changes to cookie-use are documented here. Versions follow semver.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-29
+
 ### Changed
 - **`upgrade` updates only the CLI by default; `--skills` opts in to refreshing
   the skill** (plugin / git checkout). Without it the skill copies are listed

@@ -209,7 +209,7 @@ engine may be extracted into a common crate used by both.
 
 ## Releasing
 
-Add notes under `[Unreleased]` in CHANGELOG.md, then `scripts/release.sh <version>` (`--dry-run` to only check): it bumps, tests, tags `v<version>`, waits for the release build, then syncs the `leeguooooo/plugins` marketplace.
+Add notes under `[Unreleased]` in CHANGELOG.md, then `scripts/release.sh <version>` (`--dry-run` to only check): it bumps, tests, pushes only the `v<version>` tag, waits for the release build, then pushes `main` and syncs the `leeguooooo/plugins` marketplace.
 
 <!-- use-family -->
 ## The `*-use` family

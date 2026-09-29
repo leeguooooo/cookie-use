@@ -210,13 +210,24 @@ enum Cmd {
     Rm { id: String },
     /// Rename an account id.
     Rename { id: String, new_id: String },
-    /// Upgrade cookie-use to the latest GitHub release and refresh the skill.
-    /// Exit 0 on success (or already current), 2 when the check or download failed.
+    /// Upgrade the CLI from its GitHub release (`--check` only looks; `--skills` also refreshes the skill).
+    ///
+    /// The release tarball is sha256-verified and swapped in atomically; any
+    /// failure keeps the current binary. brew / cargo / source installs are
+    /// refused with the right command instead. Never opens the vault.
+    /// Exit 0 ok, 2 check / download / verification failed, 1 refused or unfinished.
     Upgrade {
         /// Change nothing: print `cookie-use <current> -> <latest>` or
         /// `cookie-use <current> is up to date` (`--json` for the same as JSON).
         #[arg(long)]
         check: bool,
+        /// Also refresh the cookie-use skill (Claude Code plugin, its git
+        /// checkout); without it the skill copies are only listed.
+        #[arg(long)]
+        skills: bool,
+        /// Install this release instead of the latest (e.g. v0.4.0; allows downgrade).
+        #[arg(long, value_name = "vX.Y.Z")]
+        tag: Option<String>,
     },
     /// Daily update check, run detached by the notice (internal).
     #[command(name = "__update-check", hide = true)]
@@ -228,7 +239,7 @@ fn main() {
     let json = cli.json;
     // clap has already handled (and exited for) --version and --help here.
     match cli.cmd {
-        Cmd::Upgrade { check } => upgrade::run_upgrade(check, json),
+        Cmd::Upgrade { check, skills, tag } => upgrade::run_upgrade(check, json, skills, tag),
         Cmd::UpdateCheck => return upgrade::run_update_check(),
         // In --json mode the notice waits until the command succeeded: on
         // failure stderr must be exactly the error envelope the GUI decodes.

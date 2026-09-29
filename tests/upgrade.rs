@@ -56,6 +56,8 @@ impl Sandbox {
             .env("XDG_CACHE_HOME", self.dir.join("cache"))
             .env("COOKIE_USE_VAULT_KEY", TEST_KEY)
             .env("COOKIE_USE_VAULT", self.dir.join("vault.enc"))
+            .env("COOKIE_USE_APP_PATH", self.dir.join("NoApp.app"))
+            .env_remove("COOKIE_USE_UPGRADE_EXE")
             .env_remove("CLAUDE_CONFIG_DIR")
             .env_remove("GITHUB_TOKEN")
             .env_remove("CI")
@@ -247,4 +249,124 @@ fn json_failure_stderr_is_only_the_error_envelope() {
         panic!("{e}: {}", String::from_utf8_lossy(&out.stderr));
     });
     assert!(v["error"].is_string(), "{v}");
+}
+
+/// A Claude Code plugin install plus a `claude` stub on PATH that logs its args.
+fn with_plugin_and_fake_claude(sb: &Sandbox) -> (PathBuf, String) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::create_dir_all(sb.dir.join(".claude/plugins")).unwrap();
+    std::fs::write(
+        sb.dir.join(".claude/plugins/installed_plugins.json"),
+        r#"{"version":2,"plugins":{"cookie-use@leeguooooo-plugins":[{"installPath":"/placeholder"}]}}"#,
+    )
+    .unwrap();
+    let bin = sb.dir.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let log = sb.dir.join("claude.log");
+    let stub = bin.join("claude");
+    std::fs::write(
+        &stub,
+        format!("#!/bin/sh\necho \"$@\" >> '{}'\n", log.display()),
+    )
+    .unwrap();
+    std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = format!("{}:/usr/bin:/bin", bin.display());
+    (log, path)
+}
+
+#[test]
+fn skills_are_listed_by_default_and_refreshed_only_with_the_flag() {
+    let sb = Sandbox::new();
+    let (log, path) = with_plugin_and_fake_claude(&sb);
+    let current = sb.release(&format!("v{CURRENT}"));
+
+    let out = sb
+        .cmd(&["upgrade"])
+        .env("PATH", &path)
+        .env("COOKIE_USE_RELEASE_API_URL", &current)
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(0), "{stdout}");
+    assert!(
+        stdout.contains(&format!("cli: cookie-use {CURRENT} is up to date")),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("not refreshed; pass --skills or run: claude plugin update cookie-use@leeguooooo-plugins"),
+        "{stdout}"
+    );
+    assert!(!log.exists(), "claude must not run without --skills");
+
+    let out = sb
+        .cmd(&["upgrade", "--skills"])
+        .env("PATH", &path)
+        .env("COOKIE_USE_RELEASE_API_URL", &current)
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(0), "{stdout}");
+    assert!(
+        stdout
+            .contains("skill (claude-plugin): claude plugin update cookie-use@leeguooooo-plugins"),
+        "{stdout}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&log).unwrap().trim(),
+        "plugin update cookie-use@leeguooooo-plugins"
+    );
+}
+
+#[test]
+fn a_source_build_is_reported_and_never_replaced() {
+    let sb = Sandbox::new();
+    let newer = sb.release("v999.0.0");
+    let exe = sb.dir.join("checkout/target/release/cookie-use");
+    std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
+    std::fs::write(&exe, "source build").unwrap();
+    let out = sb
+        .cmd(&["upgrade", "--json"])
+        .env("COOKIE_USE_UPGRADE_EXE", &exe)
+        .env("COOKIE_USE_RELEASE_API_URL", &newer)
+        .output()
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["install_channel"]["channel"], "source", "{v}");
+    assert_eq!(v["install_channel"]["upgradable"], false, "{v}");
+
+    let out = sb
+        .cmd(&["upgrade"])
+        .env("COOKIE_USE_UPGRADE_EXE", &exe)
+        .env("COOKIE_USE_RELEASE_API_URL", &newer)
+        // Would fail loudly if it were ever fetched.
+        .env("COOKIE_USE_INSTALL_URL", "file:///nonexistent/install.sh")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("installed via source"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(std::fs::read_to_string(&exe).unwrap(), "source build");
+}
+
+#[test]
+fn pinned_tag_is_validated_and_reported() {
+    let sb = Sandbox::new();
+    let out = sb
+        .cmd(&["upgrade", "--check", "--tag", "v1.2"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    let out = sb
+        .cmd(&["upgrade", "--check", "--tag", "v0.0.1"])
+        .env("COOKIE_USE_RELEASE_API_URL", sb.release("v999.0.0"))
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).lines().next().unwrap(),
+        format!("cookie-use {CURRENT} -> 0.0.1 (pinned)")
+    );
 }

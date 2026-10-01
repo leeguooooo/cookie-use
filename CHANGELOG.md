@@ -4,6 +4,8 @@ All notable changes to cookie-use are documented here. Versions follow semver.
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-10-02
+
 ### Changed
 - **Sync conflicts between computers are merged, not overwritten.** Each
   account's login (cookies, localStorage) and metadata (label, hint, note,

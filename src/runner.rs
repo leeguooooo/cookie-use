@@ -163,20 +163,11 @@ pub(crate) fn iso_session(id: &str) -> String {
     format!("cookie-use-iso-{slug}")
 }
 
-/// Derive the URL to open from a site spec.
-///
-/// The primary domain is the first comma-segment, trimmed and with any
-/// leading `'.'` removed.  E.g.:
-/// - `"chatgpt.com,openai.com"` → `"https://chatgpt.com"`
-/// - `".example.com"`           → `"https://example.com"`
+/// Derive the URL to open from a site spec (see [`crate::vault::landing_host`]).
+/// E.g. `"chatgpt.com,openai.com"` → `"https://chatgpt.com"`,
+/// `"cloudflare.com,dash.cloudflare.com"` → `"https://dash.cloudflare.com"`.
 pub(crate) fn open_url_for(site: &str) -> String {
-    let primary = site
-        .split(',')
-        .next()
-        .unwrap_or(site)
-        .trim()
-        .trim_start_matches('.');
-    format!("https://{primary}")
+    format!("https://{}", crate::vault::landing_host(site))
 }
 
 // ---------------------------------------------------------------------------
@@ -198,6 +189,8 @@ mod tests {
             site: site.to_string(),
             label: None,
             account_hint: None,
+            note: None,
+            tags: Vec::new(),
             cookies: vec![],
             local_storage: None,
             created_at: Utc::now(),

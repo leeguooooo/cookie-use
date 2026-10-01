@@ -349,3 +349,85 @@ fn as_empty_command_is_rejected() {
     assert!(!out.status.success());
     assert!(stderr_of(&out).contains("provide a command"));
 }
+
+fn list_json(sb: &Sandbox, filter: Option<&str>) -> serde_json::Value {
+    let mut c = sb.cmd();
+    c.arg("list");
+    if let Some(f) = filter {
+        c.arg(f);
+    }
+    let out = c.arg("--json").output().unwrap();
+    assert!(out.status.success(), "list failed: {}", stderr_of(&out));
+    serde_json::from_str(&stdout_of(&out)).unwrap()
+}
+
+#[test]
+fn edit_sets_metadata_that_survives_recapture() {
+    let sb = Sandbox::new();
+    sb.seed("x/qa-admin", "x.com");
+
+    let out = sb
+        .cmd()
+        .args([
+            "edit",
+            "x/qa-admin",
+            "--label",
+            "QA admin",
+            "--note",
+            "2FA on work phone",
+        ])
+        .args(["--tags", "Prod, admin,prod", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "edit failed: {}", stderr_of(&out));
+    let edited: serde_json::Value = serde_json::from_str(&stdout_of(&out)).unwrap();
+    assert_eq!(edited["tags"], serde_json::json!(["prod", "admin"]));
+
+    let row = &list_json(&sb, None)["accounts"][0];
+    assert_eq!(row["label"], "QA admin");
+    assert_eq!(row["note"], "2FA on work phone");
+    assert_eq!(row["tags"], serde_json::json!(["prod", "admin"]));
+    assert!(row.get("live_until").is_some() && row.get("updated_at").is_some());
+
+    // Tags and notes are searchable through the list filter.
+    assert_eq!(
+        list_json(&sb, Some("admin"))["accounts"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        list_json(&sb, Some("work phone"))["accounts"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+
+    // Re-capturing the same id refreshes cookies but keeps the user's metadata.
+    sb.seed("x/qa-admin", "x.com");
+    let row = &list_json(&sb, None)["accounts"][0];
+    assert_eq!(row["label"], "QA admin");
+    assert_eq!(row["tags"], serde_json::json!(["prod", "admin"]));
+
+    // "" clears a field.
+    let out = sb
+        .cmd()
+        .args(["edit", "x/qa-admin", "--note", "", "--tags", ""])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let row = &list_json(&sb, None)["accounts"][0];
+    assert!(row["note"].is_null());
+    assert_eq!(row["tags"], serde_json::json!([]));
+}
+
+#[test]
+fn edit_without_fields_is_an_error() {
+    let sb = Sandbox::new();
+    sb.seed("x/a", "x.com");
+    let out = sb.cmd().args(["edit", "x/a"]).output().unwrap();
+    assert!(!out.status.success());
+    assert!(stderr_of(&out).contains("nothing to edit"));
+}

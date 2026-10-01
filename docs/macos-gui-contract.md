@@ -1,5 +1,9 @@
 # cookie-use → ChooseBrowser-style SwiftUI GUI: Authoritative CLI Contract
 
+> **Historical design doc.** The JSON gaps in §3 have since been closed (every
+> command takes `--json`), `switch` is now site-scoped, and `edit` / tags /
+> notes exist. The live contract is `app/CookieUse/Core/CLIBridge.swift`.
+
 Source of truth: `/Users/leo/github.com/cookie-use/src/{main.rs, vault.rs, crypto.rs, keychain.rs, confirm.rs, share.rs, chrome_use.rs, runner.rs, act_as.rs}` cross-checked against `README.md`. 18 subcommands (Revoke is a pure alias of Rm → both route to `cmd_rm`). All success messages go to **stdout**; notes/warnings/prompts/errors go to **stderr**. `main()` maps any `anyhow` error to `error: {e:#}` on stderr + `exit(1)` — exit codes are coarse (no per-failure-class codes; `as` collapses a child's real exit code into 1).
 
 ---

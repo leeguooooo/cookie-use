@@ -210,6 +210,19 @@ enum Cmd {
     Rm { id: String },
     /// Rename an account id.
     Rename { id: String, new_id: String },
+    /// Edit an account's label, hint, note or tags. Pass "" to clear a field.
+    Edit {
+        id: String,
+        #[arg(long)]
+        label: Option<String>,
+        #[arg(long)]
+        hint: Option<String>,
+        #[arg(long)]
+        note: Option<String>,
+        /// Replace the tags, comma-separated (e.g. "prod,admin"; "" clears).
+        #[arg(long)]
+        tags: Option<String>,
+    },
     /// Upgrade the CLI from its GitHub release (`--check` only looks; `--skills` also refreshes the skill).
     ///
     /// The release tarball is sha256-verified and swapped in atomically; any
@@ -378,6 +391,13 @@ fn run(cli: Cli) -> Result<()> {
         Cmd::Revoke { id } => cmd_rm(&id, json),
         Cmd::Wipe { yes } => cmd_wipe(yes, json),
         Cmd::Rename { id, new_id } => cmd_rename(&id, &new_id, json),
+        Cmd::Edit {
+            id,
+            label,
+            hint,
+            note,
+            tags,
+        } => cmd_edit(&id, label, hint, note, tags, json),
         Cmd::Upgrade { .. } | Cmd::UpdateCheck => unreachable!("dispatched in main"),
     }
 }
@@ -398,7 +418,7 @@ fn cmd_add(
         ));
     }
     let local_storage = if with_localstorage {
-        let url = format!("https://{}", primary_domain(site));
+        let url = format!("https://{}", vault::landing_host(site));
         match chrome_use::capture_local_storage(&cookies, &url) {
             Ok(ls) if !ls.is_empty() => {
                 // Human-only note (stdout) — suppressed in --json so the only
@@ -499,6 +519,11 @@ fn cmd_list(site_filter: Option<&str>, json_mode: bool) -> Result<()> {
                     "id": a.id, "site": a.site, "label": a.label,
                     "account_hint": a.account_hint, "status": a.status.to_string(),
                     "cookies": a.cookies.len(), "last_used_at": a.last_used_at,
+                    "note": a.note, "tags": a.tags,
+                    "live_until": live_until(&a.cookies)
+                        .and_then(|exp| chrono::DateTime::from_timestamp(exp, 0))
+                        .map(|dt| dt.to_rfc3339()),
+                    "updated_at": a.updated_at,
                 })
             })
             .collect();
@@ -564,6 +589,8 @@ fn account_matches(a: &Account, needle: &str) -> bool {
     hay(&a.id)
         || a.label.as_deref().map(hay).unwrap_or(false)
         || a.account_hint.as_deref().map(hay).unwrap_or(false)
+        || a.note.as_deref().map(hay).unwrap_or(false)
+        || a.tags.iter().any(|t| hay(t))
 }
 
 /// Does a comma-joined `site` string match a normalized needle, domain-aware?
@@ -617,6 +644,8 @@ fn cmd_show(id: &str, json: bool) -> Result<()> {
                 "site": a.site,
                 "label": a.label,
                 "hint": a.account_hint,
+                "note": a.note,
+                "tags": a.tags,
                 "status": a.status.to_string(),
                 "cookies": a.cookies.len(),
                 "domains": domains,
@@ -674,6 +703,17 @@ fn cmd_show(id: &str, json: bool) -> Result<()> {
     Ok(())
 }
 
+/// When the liveness heuristic flips to expired: the latest positive cookie
+/// expiry (unix seconds). `None` for session-only cookie sets.
+fn live_until(cookies: &[Value]) -> Option<i64> {
+    cookies
+        .iter()
+        .filter_map(|c| c.get("expires").and_then(|e| e.as_f64()))
+        .filter(|e| *e > 0.0)
+        .map(|e| e as i64)
+        .max()
+}
+
 /// Earliest positive cookie expiry (unix seconds), if any cookie carries one.
 fn soonest_expiry(cookies: &[Value]) -> Option<i64> {
     cookies
@@ -712,7 +752,9 @@ fn cmd_apply(args: ApplyArgs) -> Result<()> {
     }
 
     if args.clear_first {
-        chrome_use::clear(&target)?;
+        // Scoped sign-out: only cookies already known for this site (from any
+        // stored account sharing its domains), never the whole browser.
+        chrome_use::clear_site(&target, &site_cookies(&vault, &account))?;
     }
 
     // Resolve which URL (if any) to open after applying. An explicit --open-url
@@ -728,7 +770,7 @@ fn cmd_apply(args: ApplyArgs) -> Result<()> {
             );
             None
         }
-        (true, None, None) => Some(format!("https://{}", primary_domain(&account.site))),
+        (true, None, None) => Some(format!("https://{}", vault::landing_host(&account.site))),
     };
 
     let local_storage = if args.inject_localstorage {
@@ -931,6 +973,65 @@ fn cmd_rename(id: &str, new_id: &str, json: bool) -> Result<()> {
     Ok(())
 }
 
+fn cmd_edit(
+    id: &str,
+    label: Option<String>,
+    hint: Option<String>,
+    note: Option<String>,
+    tags: Option<String>,
+    json: bool,
+) -> Result<()> {
+    if label.is_none() && hint.is_none() && note.is_none() && tags.is_none() {
+        return Err(anyhow!(
+            "nothing to edit — pass --label, --hint, --note and/or --tags"
+        ));
+    }
+    let mut vault = Vault::open()?;
+    let a = vault
+        .find_mut(id)
+        .ok_or_else(|| anyhow!("no account \"{id}\""))?;
+    // "" clears a field; anything else replaces it.
+    let field = |v: String| {
+        let v = v.trim().to_string();
+        (!v.is_empty()).then_some(v)
+    };
+    if let Some(v) = label {
+        a.label = field(v);
+    }
+    if let Some(v) = hint {
+        a.account_hint = field(v);
+    }
+    if let Some(v) = note {
+        a.note = field(v);
+    }
+    if let Some(v) = tags {
+        a.tags = parse_tags(&v);
+    }
+    a.updated_at = Utc::now();
+    let out = json!({
+        "id": a.id, "label": a.label, "hint": a.account_hint,
+        "note": a.note, "tags": a.tags,
+    });
+    vault.save()?;
+    if json {
+        println!("{}", serde_json::to_string(&out)?);
+    } else {
+        println!("updated \"{id}\"");
+    }
+    Ok(())
+}
+
+/// Comma-separated tags → trimmed, lowercase, de-duplicated, order kept.
+fn parse_tags(raw: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for t in raw.split(',').map(|t| t.trim().to_lowercase()) {
+        if !t.is_empty() && !out.contains(&t) {
+            out.push(t);
+        }
+    }
+    out
+}
+
 /// QA cross-origin sugar: replay a captured session onto a local dev origin.
 /// Equivalent to `use --rewrite-domain <host> --open-url http://<host:port>`,
 /// so a prod login can be exercised against localhost in one obvious command.
@@ -1005,18 +1106,23 @@ fn store(
     hint: Option<String>,
 ) -> Result<()> {
     let now = Utc::now();
-    let created_at = vault.find(&id).map(|a| a.created_at).unwrap_or(now);
+    // Re-capturing an existing id refreshes its session but keeps what the user
+    // wrote about it (label / hint / note / tags) unless new values are given.
+    let prev = vault.find(&id).cloned();
+    let created_at = prev.as_ref().map(|a| a.created_at).unwrap_or(now);
     let status = liveness(&cookies);
     vault.upsert(Account {
         id,
         site: site.to_string(),
-        label,
-        account_hint: hint,
+        label: label.or_else(|| prev.as_ref().and_then(|a| a.label.clone())),
+        account_hint: hint.or_else(|| prev.as_ref().and_then(|a| a.account_hint.clone())),
+        note: prev.as_ref().and_then(|a| a.note.clone()),
+        tags: prev.as_ref().map(|a| a.tags.clone()).unwrap_or_default(),
         cookies,
         local_storage,
         created_at,
         updated_at: now,
-        last_used_at: None,
+        last_used_at: prev.as_ref().and_then(|a| a.last_used_at),
         status,
         proxy: None,
         fingerprint: None,
@@ -1080,6 +1186,36 @@ fn parse_cookie_file(raw: &str, site: &str) -> Result<Vec<Value>> {
 }
 
 /// First domain in a comma list, without a leading dot.
+/// Every stored cookie that belongs to `account`'s site: its own, plus those of
+/// any other account whose domains overlap (base domain ↔ subdomain). This is
+/// the set a clean switch expires, so the previous account's login is dropped
+/// without touching unrelated sites.
+fn site_cookies(vault: &Vault, account: &Account) -> Vec<Value> {
+    let hosts = site_hosts(&account.site);
+    vault
+        .accounts()
+        .iter()
+        .filter(|a| {
+            a.id == account.id
+                || site_hosts(&a.site)
+                    .iter()
+                    .any(|h| hosts.iter().any(|k| hosts_overlap(h, k)))
+        })
+        .flat_map(|a| a.cookies.iter().cloned())
+        .collect()
+}
+
+fn site_hosts(site: &str) -> Vec<String> {
+    site.split(',')
+        .map(|d| d.trim().trim_start_matches('.').to_lowercase())
+        .filter(|d| !d.is_empty())
+        .collect()
+}
+
+fn hosts_overlap(a: &str, b: &str) -> bool {
+    a == b || a.ends_with(&format!(".{b}")) || b.ends_with(&format!(".{a}"))
+}
+
 fn primary_domain(site: &str) -> String {
     site.split(',')
         .next()

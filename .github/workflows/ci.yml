@@ -16,3 +16,18 @@ jobs:
         run: cargo clippy -- -D warnings
       - name: Test
         run: cargo test
+
+  app:
+    # Compile CookieUse.app on the same runner as the release dmg job, so a
+    # Swift/SDK break shows up on the PR instead of after the tag is pushed.
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install xcodegen
+        run: brew install xcodegen
+      - name: Build app
+        run: |
+          cd app && xcodegen generate
+          xcodebuild -project CookieUse.xcodeproj -scheme CookieUse -configuration Release \
+            -destination 'platform=macOS' -derivedDataPath .build/ci build CODE_SIGNING_ALLOWED=NO | tail -20
+          test "${PIPESTATUS[0]}" -eq 0

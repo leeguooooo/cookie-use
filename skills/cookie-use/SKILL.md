@@ -83,7 +83,7 @@ cookie-use fingerprint --all --json        # all cached fingerprints; skips unca
 # Apply / switch.
 cookie-use use <id> --target session:<name>     # inject into a connected chrome-use session
 cookie-use use <id> --target isolated           # spin up a throwaway browser with this account
-cookie-use switch <id> --target session:<name>  # clear the site's cookies, then apply
+cookie-use switch <id> --target session:<name>  # sign the site's previous account out (that site only), then apply
 #   add --no-open to skip opening the site after applying.
 #   --rewrite-domain <host>   rewrite cookie domains on apply (e.g. "localhost")
 #                             so a prod/test session works on a different origin.
@@ -113,6 +113,8 @@ cookie-use share <id> [--out <path.cusession>] [--password <pw>]
 cookie-use redeem <path.cusession> [--password <pw>] [--id <new-id>]
 
 # Manage.
+cookie-use edit <id> --label "QA admin" --tags prod,admin --note "2FA on work phone"   # "" clears
+cookie-use list admin                          # list also searches tags and notes
 cookie-use rename <id> <new-id>
 cookie-use rm <id>                             # (alias: revoke <id>)
 cookie-use wipe [--yes]                        # delete the ENTIRE vault

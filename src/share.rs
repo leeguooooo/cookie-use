@@ -291,6 +291,8 @@ mod tests {
             site: "example.com".to_string(),
             label: Some("Alice".to_string()),
             account_hint: Some("alice@example.com".to_string()),
+            note: None,
+            tags: Vec::new(),
             cookies: vec![json!({
                 "name": "session_id",
                 "value": "SUPER_SECRET_TOKEN_abc123",

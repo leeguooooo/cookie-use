@@ -18,6 +18,12 @@ pub struct Account {
     /// Optional human hint (email / username), display-only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account_hint: Option<String>,
+    /// Free-form note (e.g. "2FA on the work phone"), display-only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+    /// Free-form tags (e.g. "prod", "admin") for grouping and search.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
     /// Full cross-domain cookie set, CDP `Network.setCookie` shape.
     pub cookies: Vec<Value>,
     /// Optional localStorage snapshot for the primary origin (key -> value).
@@ -159,4 +165,44 @@ fn vault_path() -> Result<PathBuf> {
     }
     let home = dirs::home_dir().ok_or_else(|| anyhow!("could not find home directory"))?;
     Ok(home.join(".cookie-use").join("vault.enc"))
+}
+
+/// The host to open for a comma-joined `site`: the first host, unless a later
+/// one is a subdomain of it — then that, since `cloudflare.com,dash.cloudflare.com`
+/// means "log in on the dashboard", not the marketing page. localStorage is
+/// captured and injected on this same origin.
+pub fn landing_host(site: &str) -> String {
+    let hosts: Vec<&str> = site
+        .split(',')
+        .map(|h| h.trim().trim_start_matches('.'))
+        .filter(|h| !h.is_empty())
+        .collect();
+    let Some(first) = hosts.first() else {
+        return site.trim().to_string();
+    };
+    let suffix = format!(".{first}");
+    hosts
+        .iter()
+        .find(|h| h.ends_with(&suffix))
+        .unwrap_or(first)
+        .to_string()
+}
+
+#[cfg(test)]
+mod landing_tests {
+    use super::landing_host;
+
+    #[test]
+    fn prefers_a_listed_subdomain_of_the_first_host() {
+        assert_eq!(
+            landing_host("cloudflare.com,dash.cloudflare.com"),
+            "dash.cloudflare.com"
+        );
+        assert_eq!(landing_host("chatgpt.com,openai.com"), "chatgpt.com");
+        assert_eq!(
+            landing_host("pb-super-admin.pwtk.cc,pwtk.cc"),
+            "pb-super-admin.pwtk.cc"
+        );
+        assert_eq!(landing_host(" .example.com "), "example.com");
+    }
 }

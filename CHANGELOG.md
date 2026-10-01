@@ -4,6 +4,26 @@ All notable changes to cookie-use are documented here. Versions follow semver.
 
 ## [Unreleased]
 
+### Added
+- **`copy --site <d> --from <profile> --to <profile>`**: overwrite one Chrome
+  profile's login for a site with another's. Only that site's cookies change
+  (stale ones are expired one by one; other sites untouched), the destination's
+  previous login is saved to the vault first (tag `backup`) for undo, and
+  `--dry-run` shows the counts. Profiles resolve by directory, name or email
+  from Chrome's Local State; a new `browser:<email>` target pins writes to one
+  connected profile.
+- **`export`**: many accounts (all, `--site`, or ids) in one encrypted v2
+  bundle; `redeem` merges it (newer copy of each account wins).
+- **`cloud`: CookieCloud-compatible sync** (`setup`, `sync`, `pull`, `status`,
+  `secret`, `domains`, `import`, `disconnect`). Works with any CookieCloud
+  server; both CookieCloud encryptions (verified byte-for-byte against
+  crypto-js); the multi-account vault is sealed again with argon2id + AES-GCM;
+  the latest login per site is also published in CookieCloud's `cookie_data`
+  for the browser extension, and extension uploads can be imported with their
+  real expiry. Deletes and renames propagate.
+- App: Copy between profiles (preview, Undo), Export logins, multi-account
+  import preview, Cloud sync settings with automatic sync.
+
 ### Changed
 - `install-app.sh` installs without sudo, so the app is owned by you and
   re-running it upgrades with no password. sudo is used once, only to remove a

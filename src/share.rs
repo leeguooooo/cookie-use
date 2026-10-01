@@ -1,5 +1,6 @@
-//! `share` / `redeem` — export one stored account as a password-encrypted
-//! `.cusession` bundle that a teammate redeems.
+//! `share` / `export` / `redeem` — password-encrypted `.cusession` bundles:
+//! one account for a teammate (v1), or many accounts to move a vault to another
+//! computer (v2, see [`seal_accounts`]).
 //!
 //! # Bundle format (JSON, UTF-8)
 //!
@@ -28,9 +29,11 @@ use crate::vault::{Account, Vault};
 use anyhow::{anyhow, bail, Context, Result};
 use argon2::{Argon2, Params};
 use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
+use chrono::DateTime;
 use chrono::Utc;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 // ---------------------------------------------------------------------------
 // Bundle wire type
@@ -131,6 +134,89 @@ pub fn unseal(bundle_bytes: &[u8], password: &str) -> Result<Account> {
 }
 
 // ---------------------------------------------------------------------------
+// Multi-account bundles (v2)
+// ---------------------------------------------------------------------------
+
+/// v2: many accounts in one bundle (vault export, cloud sync). The cleartext
+/// `accounts` index (id + site only) lets a GUI preview what's inside before
+/// the password is typed; everything else is sealed like v1.
+#[derive(Serialize, Deserialize)]
+struct BundleV2 {
+    cookie_use_bundle: u32,
+    accounts: Vec<IndexEntry>,
+    kdf: String,
+    salt: String,
+    ciphertext: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct IndexEntry {
+    id: String,
+    site: String,
+}
+
+/// The sealed part of a v2 bundle.
+#[derive(Serialize, Deserialize, Default)]
+pub struct Payload {
+    pub accounts: Vec<Account>,
+    /// Deletes to propagate (cloud sync); empty for a plain export.
+    #[serde(default)]
+    pub deleted: BTreeMap<String, DateTime<Utc>>,
+}
+
+pub fn seal_accounts(payload: &Payload, password: &str) -> Result<Vec<u8>> {
+    let mut salt = [0u8; 16];
+    rand::thread_rng().fill_bytes(&mut salt);
+    let key = derive_key(password, &salt)?;
+    let plaintext = serde_json::to_vec(payload).context("serialising accounts")?;
+    let bundle = BundleV2 {
+        cookie_use_bundle: 2,
+        accounts: payload
+            .accounts
+            .iter()
+            .map(|a| IndexEntry {
+                id: a.id.clone(),
+                site: a.site.clone(),
+            })
+            .collect(),
+        kdf: "argon2id".into(),
+        salt: B64.encode(salt),
+        ciphertext: B64.encode(crate::crypto::encrypt(&key, &plaintext)?),
+    };
+    serde_json::to_vec_pretty(&bundle).context("serialising bundle")
+}
+
+/// Open a v1 or v2 bundle. A v1 bundle yields one account and no deletes.
+pub fn unseal_any(bundle_bytes: &[u8], password: &str) -> Result<Payload> {
+    let v: serde_json::Value = serde_json::from_slice(bundle_bytes)
+        .context("parsing bundle JSON — is this a .cusession file?")?;
+    match v.get("cookie_use_bundle").and_then(|n| n.as_u64()) {
+        Some(1) => Ok(Payload {
+            accounts: vec![unseal(bundle_bytes, password)?],
+            ..Default::default()
+        }),
+        Some(2) => {
+            let b: BundleV2 = serde_json::from_value(v).context("parsing v2 bundle")?;
+            if b.kdf != "argon2id" {
+                bail!("unsupported KDF \"{}\" in bundle", b.kdf);
+            }
+            let salt = B64.decode(&b.salt).context("decoding bundle salt")?;
+            let encrypted = B64
+                .decode(&b.ciphertext)
+                .context("decoding bundle ciphertext")?;
+            let key = derive_key(password, &salt)?;
+            let plaintext = crate::crypto::decrypt(&key, &encrypted)
+                .map_err(|_| anyhow!("wrong password or corrupt bundle"))?;
+            serde_json::from_slice(&plaintext).context("deserialising accounts from bundle")
+        }
+        Some(n) => {
+            bail!("unsupported bundle version {n} — upgrade cookie-use (`cookie-use upgrade`)")
+        }
+        None => bail!("not a cookie-use bundle"),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // ID slug helper
 // ---------------------------------------------------------------------------
 
@@ -219,6 +305,67 @@ pub fn cmd_share(
     Ok(())
 }
 
+/// Export: many accounts (`ids`, a `site` filter, or everything) into one v2
+/// bundle — for moving logins to another computer.
+pub fn cmd_export(
+    vault: &Vault,
+    ids: &[String],
+    site: Option<&str>,
+    out: Option<&str>,
+    password: Option<&str>,
+    json: bool,
+) -> Result<()> {
+    let mut accounts: Vec<Account> = Vec::new();
+    for id in ids {
+        accounts.push(
+            vault
+                .find(id)
+                .ok_or_else(|| anyhow!("no account \"{id}\""))?
+                .clone(),
+        );
+    }
+    if ids.is_empty() {
+        accounts = vault
+            .accounts()
+            .iter()
+            .filter(|a| site.map(|s| crate::site_matches(a, s)).unwrap_or(true))
+            .cloned()
+            .collect();
+    }
+    if accounts.is_empty() {
+        bail!(
+            "nothing to export{}",
+            site.map(|s| format!(" for \"{s}\"")).unwrap_or_default()
+        );
+    }
+    let password = require_password(password, "enter bundle password: ")?;
+    let bytes = seal_accounts(
+        &Payload {
+            accounts,
+            ..Default::default()
+        },
+        &password,
+    )?;
+    let path = out.map(String::from).unwrap_or_else(|| {
+        format!(
+            "cookie-use-{}.cusession",
+            Utc::now().format("%Y%m%d-%H%M%S")
+        )
+    });
+    std::fs::write(&path, &bytes).with_context(|| format!("writing bundle to {path}"))?;
+    let n = serde_json::from_slice::<BundleV2>(&bytes)?.accounts.len();
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string(&serde_json::json!({ "path": path, "accounts": n }))?
+        );
+    } else {
+        println!("exported {n} account(s) to {path}");
+        println!("on the other computer: cookie-use redeem {path}");
+    }
+    Ok(())
+}
+
 /// Redeem: import a `.cusession` bundle into the local vault.
 ///
 /// Decrypts the bundle, optionally renames the account (`new_id`), refreshes
@@ -238,6 +385,26 @@ pub fn cmd_redeem(
         .context("bundle is not valid JSON — not a .cusession file")?;
 
     let password = require_password(password, "enter bundle password: ")?;
+
+    if _pre.get("cookie_use_bundle").and_then(|n| n.as_u64()) == Some(2) {
+        if new_id.is_some() {
+            bail!("--id only applies to a single-account bundle");
+        }
+        let payload = unseal_any(&bundle_bytes, &password)?;
+        let report = vault.merge(payload.accounts, &payload.deleted);
+        vault.save()?;
+        if json {
+            println!("{}", serde_json::to_string(&report)?);
+        } else {
+            println!(
+                "imported {} new, {} updated, {} already up to date",
+                report.added.len(),
+                report.updated.len(),
+                report.unchanged
+            );
+        }
+        return Ok(());
+    }
 
     let mut account = unseal(&bundle_bytes, &password)?;
 

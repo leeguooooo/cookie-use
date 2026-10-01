@@ -36,9 +36,16 @@ struct ManagementView: View {
                 Button { model.sheet = .capture(prefill: nil) } label: { Label("Save login", systemImage: "plus") }
                     .help("Save a login from Chrome (⌘N)")
                     .keyboardShortcut("n")
+                Button { model.sheet = .copy } label: { Label("Copy between profiles", systemImage: "arrow.right.doc.on.clipboard") }
+                    .help("Copy a site’s login from one Chrome profile into another")
+                Button { model.sheet = .cloud } label: {
+                    Label("Cloud sync", systemImage: model.syncing ? "arrow.triangle.2.circlepath" : "arrow.triangle.2.circlepath.icloud")
+                }
+                .help(model.cloud?.configured == true ? "Cloud sync is on — click to sync or change it" : "Sync logins between your Macs")
                 Menu {
-                    Button("Import cookie file…") { model.sheet = .importFile(nil) }
-                    Button("Redeem .cusession bundle…") { model.sheet = .redeem(nil) }
+                    Button("Export logins…") { model.sheet = .export(site: nil) }
+                    Button("Import a .cusession file…") { model.sheet = .redeem(nil) }
+                    Button("Import a cookie file…") { model.sheet = .importFile(nil) }
                     Divider()
                     Button("Check all sessions") { Task { await model.checkAll() } }
                 } label: { Label("More", systemImage: "square.and.arrow.down") }
@@ -48,7 +55,7 @@ struct ManagementView: View {
         }
         .overlay(alignment: .bottom) {
             if let banner = model.banner {
-                BannerView(banner: banner).frame(maxWidth: 520).padding(14)
+                BannerView(banner: banner, action: model.bannerAction).frame(maxWidth: 560).padding(14)
             }
         }
         .overlay {
@@ -66,7 +73,7 @@ struct ManagementView: View {
             model.handleFile(url)
             return true
         } isTargeted: { dropTargeted = $0 }
-        .task { await model.refresh() }
+        .task { await model.refresh(); await model.loadCloud() }
     }
 
     // MARK: Sidebar
@@ -135,6 +142,7 @@ struct ManagementView: View {
                             model.sheet = .capture(prefill: .init(site: account.site, id: account.id, label: account.label))
                         }
                         Button("Share…") { model.sheet = .share(account) }
+                        Button("Export all \(Favicons.key(account.primarySite)) logins…") { model.sheet = .export(site: account.primarySite) }
                     }
             }
         }

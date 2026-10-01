@@ -431,3 +431,254 @@ fn edit_without_fields_is_an_error() {
     assert!(!out.status.success());
     assert!(stderr_of(&out).contains("nothing to edit"));
 }
+
+/// A minimal in-process CookieCloud server: `POST /update` stores the body per
+/// uuid, `GET /get/<uuid>` returns it — the whole protocol cookie-use relies on.
+fn mock_cookiecloud() -> String {
+    use std::collections::HashMap;
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::sync::{Arc, Mutex};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let store: Arc<Mutex<HashMap<String, String>>> = Arc::default();
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let store = store.clone();
+            std::thread::spawn(move || {
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut stream = stream;
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                let mut parts = line.split_whitespace();
+                let (method, path) = (
+                    parts.next().unwrap_or("").to_string(),
+                    parts.next().unwrap_or("").to_string(),
+                );
+                let mut len = 0usize;
+                loop {
+                    let mut h = String::new();
+                    reader.read_line(&mut h).unwrap();
+                    let lower = h.to_ascii_lowercase();
+                    if let Some(v) = lower.strip_prefix("content-length:") {
+                        len = v.trim().parse().unwrap_or(0);
+                    }
+                    if lower.starts_with("expect:") {
+                        stream.write_all(b"HTTP/1.1 100 Continue\r\n\r\n").unwrap();
+                    }
+                    if h == "\r\n" || h.is_empty() {
+                        break;
+                    }
+                }
+                let mut body = vec![0; len];
+                reader.read_exact(&mut body).unwrap();
+                let (code, reply) = if method == "POST" && path == "/update" {
+                    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                    let uuid = v["uuid"].as_str().unwrap().to_string();
+                    let saved = serde_json::json!({"encrypted": v["encrypted"], "crypto_type": v["crypto_type"]});
+                    store.lock().unwrap().insert(uuid, saved.to_string());
+                    (200, r#"{"action":"done"}"#.to_string())
+                } else if let Some(uuid) = path.strip_prefix("/get/") {
+                    match store.lock().unwrap().get(uuid) {
+                        Some(s) => (200, s.clone()),
+                        None => (404, "Not Found".into()),
+                    }
+                } else {
+                    (404, "Not Found".into())
+                };
+                let resp = format!(
+                    "HTTP/1.1 {code} X\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}",
+                    reply.len()
+                );
+                stream.write_all(resp.as_bytes()).unwrap();
+            });
+        }
+    });
+    format!("http://{addr}")
+}
+
+fn json_of(out: &std::process::Output) -> serde_json::Value {
+    assert!(out.status.success(), "failed: {}", stderr_of(out));
+    serde_json::from_str(&stdout_of(out)).unwrap()
+}
+
+#[test]
+fn cloud_sync_moves_accounts_tags_and_deletes_between_machines() {
+    let server = mock_cookiecloud();
+    let (a, b) = (Sandbox::new(), Sandbox::new());
+    a.seed("x/alice", "x.com");
+    a.seed("y/bob", "y.com");
+    a.cmd()
+        .args(["edit", "x/alice", "--tags", "prod"])
+        .output()
+        .unwrap();
+
+    let cfg = json_of(
+        &a.cmd()
+            .args(["cloud", "setup", "--endpoint", &server, "--json"])
+            .output()
+            .unwrap(),
+    );
+    let (uuid, pw) = (
+        cfg["uuid"].as_str().unwrap(),
+        cfg["password"].as_str().unwrap(),
+    );
+    let r = json_of(&a.cmd().args(["cloud", "sync", "--json"]).output().unwrap());
+    assert_eq!(r["pushed"], true);
+
+    b.cmd()
+        .args([
+            "cloud",
+            "setup",
+            "--endpoint",
+            &server,
+            "--uuid",
+            uuid,
+            "--password",
+            pw,
+        ])
+        .output()
+        .unwrap();
+    let r = json_of(&b.cmd().args(["cloud", "sync", "--json"]).output().unwrap());
+    assert_eq!(r["added"].as_array().unwrap().len(), 2);
+    let rows = list_json(&b, None);
+    let alice = rows["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["id"] == "x/alice")
+        .unwrap()
+        .clone();
+    assert_eq!(alice["tags"], serde_json::json!(["prod"]));
+
+    // A delete on B reaches A; an edit on B wins on A.
+    b.cmd().args(["rm", "y/bob"]).output().unwrap();
+    b.cmd()
+        .args(["edit", "x/alice", "--note", "from b"])
+        .output()
+        .unwrap();
+    b.cmd().args(["cloud", "sync"]).output().unwrap();
+    let r = json_of(&a.cmd().args(["cloud", "pull", "--json"]).output().unwrap());
+    assert_eq!(r["removed"], serde_json::json!(["y/bob"]));
+    let rows = list_json(&a, None);
+    assert_eq!(rows["accounts"].as_array().unwrap().len(), 1);
+    assert_eq!(rows["accounts"][0]["note"], "from b");
+
+    // The wrong password is refused rather than merging garbage.
+    let c = Sandbox::new();
+    c.cmd()
+        .args([
+            "cloud",
+            "setup",
+            "--endpoint",
+            &server,
+            "--uuid",
+            uuid,
+            "--password",
+            "wrong",
+        ])
+        .output()
+        .unwrap();
+    let out = c.cmd().args(["cloud", "pull"]).output().unwrap();
+    assert!(!out.status.success());
+    assert!(
+        stderr_of(&out).contains("wrong uuid/password"),
+        "{}",
+        stderr_of(&out)
+    );
+}
+
+#[test]
+fn export_bundle_moves_many_accounts_and_merges_by_recency() {
+    let (a, b) = (Sandbox::new(), Sandbox::new());
+    a.seed("x/one", "x.com");
+    a.seed("x/two", "x.com");
+    a.seed("y/three", "y.com");
+    let bundle = a.path("all.cusession");
+    let out = a
+        .cmd()
+        .args([
+            "export",
+            "--site",
+            "x.com",
+            "--password",
+            "pw-123456",
+            "--out",
+        ])
+        .arg(&bundle)
+        .arg("--json")
+        .output()
+        .unwrap();
+    assert_eq!(json_of(&out)["accounts"], 2);
+    // Cleartext index for previews; no cookie value anywhere outside the ciphertext.
+    let raw = std::fs::read_to_string(&bundle).unwrap();
+    assert!(raw.contains("\"x/one\"") && !raw.contains("abc123"));
+
+    let r = json_of(
+        &b.cmd()
+            .args(["redeem"])
+            .arg(&bundle)
+            .args(["--password", "pw-123456", "--json"])
+            .output()
+            .unwrap(),
+    );
+    assert_eq!(r["added"].as_array().unwrap().len(), 2);
+    // Redeeming the same bundle again changes nothing.
+    let r = json_of(
+        &b.cmd()
+            .args(["redeem"])
+            .arg(&bundle)
+            .args(["--password", "pw-123456", "--json"])
+            .output()
+            .unwrap(),
+    );
+    assert_eq!(r["unchanged"], 2);
+    let out = b
+        .cmd()
+        .args(["redeem"])
+        .arg(&bundle)
+        .args(["--password", "nope"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+}
+
+#[test]
+fn copy_refuses_same_or_ambiguous_profiles() {
+    let sb = Sandbox::new();
+    let chrome = sb.path("chrome");
+    std::fs::create_dir_all(&chrome).unwrap();
+    std::fs::write(
+        chrome.join("Local State"),
+        r#"{"profile":{"info_cache":{"Default":{"name":"Leo","user_name":"leo@x.com"},
+            "Profile 7":{"name":"wind","user_name":"w7@x.com"},"Profile 9":{"name":"wind","user_name":"w9@x.com"}}}}"#,
+    )
+    .unwrap();
+    let run = |from: &str, to: &str| {
+        sb.cmd()
+            .env("COOKIE_USE_CHROME_DIR", &chrome)
+            .args([
+                "copy",
+                "--site",
+                "x.com",
+                "--from",
+                from,
+                "--to",
+                to,
+                "--dry-run",
+            ])
+            .output()
+            .unwrap()
+    };
+    let out = run("Leo", "Default");
+    assert!(
+        stderr_of(&out).contains("same profile"),
+        "{}",
+        stderr_of(&out)
+    );
+    let out = run("wind", "Leo");
+    assert!(
+        stderr_of(&out).contains("Profile 7") && stderr_of(&out).contains("Profile 9"),
+        "{}",
+        stderr_of(&out)
+    );
+}

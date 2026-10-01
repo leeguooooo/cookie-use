@@ -17,6 +17,10 @@ pub enum Target {
     Session(String),
     /// A fresh, throwaway isolated browser (`chrome-use --launch`).
     Isolated,
+    /// One specific connected Chrome profile, by account email (or relay id):
+    /// `chrome-use --browser <sel>`. Used to write into a *chosen* profile
+    /// (copy between profiles) rather than whichever window has focus.
+    Browser(String),
 }
 
 impl Target {
@@ -25,6 +29,8 @@ impl Target {
             Ok(Target::Isolated)
         } else if let Some(name) = s.strip_prefix("session:") {
             Ok(Target::Session(name.to_string()))
+        } else if let Some(sel) = s.strip_prefix("browser:") {
+            Ok(Target::Browser(sel.to_string()))
         } else if s.strip_prefix("profile:").is_some() {
             Err(anyhow!(
                 "profile: targets aren't in v0.1 — connect chrome-use's extension to that \
@@ -32,7 +38,7 @@ impl Target {
             ))
         } else {
             Err(anyhow!(
-                "unknown target \"{}\" (use session:<name> or isolated)",
+                "unknown target \"{}\" (use session:<name>, browser:<email> or isolated)",
                 s
             ))
         }
@@ -45,8 +51,41 @@ impl Target {
         match self {
             Target::Session(name) => name.clone(),
             Target::Isolated => "cookie-use-iso".to_string(),
+            // chrome-use pins a session to a profile on its first connect and
+            // keeps it, so each profile gets its own session name.
+            Target::Browser(sel) => format!("cookie-use-to-{}", slug(sel)),
         }
     }
+
+    /// Leading chrome-use args that address this target.
+    fn args(&self) -> Vec<String> {
+        let mut a = Vec::new();
+        if let Target::Browser(sel) = self {
+            a.extend(["--browser".to_string(), sel.clone()]);
+        }
+        a.extend(["--session".to_string(), self.session_name()]);
+        a
+    }
+}
+
+fn slug(s: &str) -> String {
+    s.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect()
+}
+
+/// Run chrome-use against `target` with extra args.
+fn run_on(target: &Target, rest: &[&str]) -> Result<()> {
+    let mut args = target.args();
+    args.extend(rest.iter().map(|s| s.to_string()));
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    run(&refs)
 }
 
 /// Options controlling how an account is applied to a target.
@@ -60,6 +99,102 @@ pub struct ApplyOpts<'a> {
     pub open_url: Option<&'a str>,
     /// localStorage items to inject into the opened origin (requires open_url).
     pub local_storage: Option<&'a Map<String, Value>>,
+}
+
+/// A local Chrome profile as Chrome's `Local State` describes it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LocalProfile {
+    /// Directory name ("Default", "Profile 3") — what `cookies export --from` takes.
+    pub dir: String,
+    /// Display name shown in Chrome's profile menu.
+    pub name: String,
+    /// Signed-in Google account, if any — what `--browser` pins to.
+    pub email: Option<String>,
+}
+
+fn chrome_user_data_dir() -> Option<std::path::PathBuf> {
+    if let Some(p) = std::env::var_os("COOKIE_USE_CHROME_DIR") {
+        return Some(p.into());
+    }
+    dirs::home_dir().map(|h| h.join("Library/Application Support/Google/Chrome"))
+}
+
+/// Every profile listed in Chrome's `Local State`.
+pub fn local_profiles() -> Result<Vec<LocalProfile>> {
+    let path = chrome_user_data_dir()
+        .ok_or_else(|| anyhow!("could not find the Chrome data directory"))?
+        .join("Local State");
+    let raw = std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
+    parse_local_state(&raw)
+}
+
+fn parse_local_state(raw: &[u8]) -> Result<Vec<LocalProfile>> {
+    let v: Value = serde_json::from_slice(raw).context("parsing Chrome Local State")?;
+    let cache = v
+        .pointer("/profile/info_cache")
+        .and_then(Value::as_object)
+        .ok_or_else(|| anyhow!("Chrome Local State has no profile list"))?;
+    let mut out: Vec<LocalProfile> = cache
+        .iter()
+        .map(|(dir, info)| LocalProfile {
+            dir: dir.clone(),
+            name: info
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or(dir)
+                .to_string(),
+            email: info
+                .get("user_name")
+                .and_then(Value::as_str)
+                .filter(|e| !e.is_empty())
+                .map(String::from),
+        })
+        .collect();
+    out.sort_by(|a, b| (a.dir != "Default", &a.dir).cmp(&(b.dir != "Default", &b.dir)));
+    Ok(out)
+}
+
+/// Resolve a user-supplied profile (directory, display name or email).
+/// Display names repeat ("wind" ×3), so an ambiguous name is an error that
+/// lists the directories to pick from.
+pub fn resolve_profile(sel: &str) -> Result<LocalProfile> {
+    let all = local_profiles()?;
+    pick_profile(&all, sel)
+}
+
+fn pick_profile(all: &[LocalProfile], sel: &str) -> Result<LocalProfile> {
+    let s = sel.trim();
+    if let Some(p) = all.iter().find(|p| p.dir.eq_ignore_ascii_case(s)) {
+        return Ok(p.clone());
+    }
+    let hits: Vec<&LocalProfile> = all
+        .iter()
+        .filter(|p| {
+            p.name.eq_ignore_ascii_case(s)
+                || p.email
+                    .as_deref()
+                    .map(|e| e.eq_ignore_ascii_case(s))
+                    .unwrap_or(false)
+        })
+        .collect();
+    match hits.as_slice() {
+        [one] => Ok((*one).clone()),
+        [] => Err(anyhow!(
+            "no Chrome profile \"{s}\" (have: {})",
+            all.iter()
+                .map(|p| format!("{} ({})", p.name, p.dir))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
+        many => Err(anyhow!(
+            "\"{s}\" matches {} profiles — use the directory: {}",
+            many.len(),
+            many.iter()
+                .map(|p| p.dir.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
+    }
 }
 
 /// Export a profile's decrypted cookies for the given site(s) via chrome-use.
@@ -110,24 +245,19 @@ pub fn apply(cookies: &[Value], target: &Target, opts: &ApplyOpts) -> Result<()>
     let tmp = write_temp_cookies(&cookies)?;
     let path = tmp.to_string_lossy().to_string();
 
-    // Resolve to a concrete session name (launching a throwaway one if isolated).
-    let session = match target {
-        Target::Session(name) => name.clone(),
-        Target::Isolated => {
-            let name = "cookie-use-iso".to_string();
-            run(&["--session", &name, "--launch", "open", "about:blank"])?;
-            name
-        }
-    };
+    // An isolated target starts a throwaway browser first.
+    if let Target::Isolated = target {
+        run_on(target, &["--launch", "open", "about:blank"])?;
+    }
 
-    run(&["--session", &session, "cookies", "set", "--curl", &path])?;
+    run_on(target, &["cookies", "set", "--curl", &path])?;
     if let Some(url) = opts.open_url {
-        run(&["--session", &session, "open", url])?;
+        run_on(target, &["open", url])?;
         // localStorage is origin-scoped, so it can only be injected once we're
         // on the opened page. Reload afterwards so the app reads it on boot.
         if let Some(items) = opts.local_storage.filter(|m| !m.is_empty()) {
-            inject_local_storage(&session, items)?;
-            let _ = run(&["--session", &session, "reload"]);
+            inject_local_storage(target, items)?;
+            let _ = run_on(target, &["reload"]);
         }
     }
     let _ = std::fs::remove_file(&tmp);
@@ -161,16 +291,16 @@ pub fn apply_isolated_named(
 /// path, as previously stored for this site) by re-setting each with a past
 /// expiry, which Chrome treats as a delete. Isolated targets start empty.
 pub fn clear_site(target: &Target, known: &[Value]) -> Result<()> {
-    let Target::Session(session) = target else {
+    if let Target::Isolated = target {
         return Ok(());
-    };
+    }
     let tombstones = tombstones(known);
     if tombstones.is_empty() {
         return Ok(());
     }
     let tmp = write_temp_cookies(&tombstones)?;
     let path = tmp.to_string_lossy().to_string();
-    let result = run(&["--session", session, "cookies", "set", "--curl", &path]);
+    let result = run_on(target, &["cookies", "set", "--curl", &path]);
     let _ = std::fs::remove_file(&tmp);
     result
 }
@@ -223,7 +353,7 @@ pub fn rewrite_cookie_domains(cookies: &[Value], host: &str) -> Vec<Value> {
         .collect()
 }
 
-fn inject_local_storage(session: &str, items: &Map<String, Value>) -> Result<()> {
+fn inject_local_storage(target: &Target, items: &Map<String, Value>) -> Result<()> {
     for (k, v) in items {
         // localStorage values are always strings; unwrap JSON strings so we
         // don't double-quote them, and stringify anything else defensively.
@@ -231,7 +361,7 @@ fn inject_local_storage(session: &str, items: &Map<String, Value>) -> Result<()>
             Value::String(s) => s.clone(),
             other => other.to_string(),
         };
-        run(&["--session", session, "storage", "local", "set", k, &val])?;
+        run_on(target, &["storage", "local", "set", k, &val])?;
     }
     Ok(())
 }
@@ -322,6 +452,25 @@ mod tests {
         // Non-domain fields are preserved.
         assert_eq!(out[0]["value"], json!("a"));
         assert_eq!(out[1]["name"], json!("sid"));
+    }
+
+    #[test]
+    fn local_state_profiles_and_ambiguous_names() {
+        let raw = br#"{"profile":{"info_cache":{
+            "Profile 7":{"name":"wind","user_name":"a@x.com"},
+            "Default":{"name":"Leo","user_name":"leo@x.com"},
+            "Profile 9":{"name":"wind","user_name":""}}}}"#;
+        let all = parse_local_state(raw).unwrap();
+        assert_eq!(all[0].dir, "Default");
+        assert_eq!(all[2].email, None);
+        assert_eq!(pick_profile(&all, "leo").unwrap().dir, "Default");
+        assert_eq!(pick_profile(&all, "A@X.com").unwrap().dir, "Profile 7");
+        assert_eq!(pick_profile(&all, "profile 9").unwrap().name, "wind");
+        let err = pick_profile(&all, "wind").unwrap_err().to_string();
+        assert!(
+            err.contains("Profile 7") && err.contains("Profile 9"),
+            "{err}"
+        );
     }
 
     #[test]

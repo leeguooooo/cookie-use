@@ -109,6 +109,9 @@ A menu-bar quick switcher over the same vault the CLI and your agents use:
   bundle, to import it.
 - Touch ID before injecting (every time, once per 10 minutes, or never), and
   live updates when an agent changes the vault from a terminal.
+- Copy a login between Chrome profiles (with a preview and Undo), export
+  logins to a file, and cloud sync through a CookieCloud server (every 5 /
+  15 / 60 minutes).
 
 ### As an agent skill (skills.sh)
 
@@ -142,6 +145,9 @@ See <https://www.skills.sh/docs>. The skill lives at `skills/cookie-use/SKILL.md
 | `cookie-use as <id> --target <…> -- <cmd>` | Run `<cmd>` in a session-scoped env (`COOKIE_USE_*`, `CHROME_USE_SESSION`) — an agent acts **as** that account |
 | `cookie-use share <id> [--out <f>] [--password <pw>]` | Export a **password-encrypted** `.cusession` bundle (argon2id + AES-256-GCM) |
 | `cookie-use redeem <f> [--password <pw>] [--id <new>]` | Import a shared bundle (installing cookie-use is the cost of redeeming) |
+| `cookie-use copy --site <d> --from <profile> --to <profile> [--dry-run]` | Overwrite one Chrome profile's login for a site with another's. Only that site's cookies change; the destination's old login is saved to the vault first (tag `backup`) so it can be restored |
+| `cookie-use export [ids…] [--site <d>] --out <f> [--password]` | Many accounts in one encrypted bundle for another computer; `redeem` it there (newer copy of each account wins) |
+| `cookie-use cloud setup\|sync\|pull\|status\|secret\|domains\|import\|disconnect` | Sync the vault through a [CookieCloud](https://github.com/easychen/CookieCloud) server (see below) |
 | `cookie-use edit <id> [--label] [--hint] [--note] [--tags a,b]` | Edit metadata (`""` clears a field). Tags and notes are searchable via `list` |
 | `cookie-use rm <id>` / `revoke <id>` / `rename <id> <new>` | Manage entries |
 | `cookie-use wipe [--yes]` | Delete the entire vault |
@@ -184,6 +190,45 @@ Hand a login to a teammate as an encrypted bundle (they must install cookie-use 
 cookie-use share chatgpt/seat-07 --out seat.cusession   # prompts for a password
 cookie-use redeem seat.cusession --id chatgpt/seat-07   # on their machine
 ```
+
+### Move logins between profiles, computers and the cloud
+
+```sh
+# Profile → profile: Work's Cloudflare login replaces Leo's (other sites untouched).
+cookie-use copy --site dash.cloudflare.com,cloudflare.com --from "Profile 3" --to Default --dry-run
+cookie-use copy --site dash.cloudflare.com,cloudflare.com --from "Profile 3" --to Default
+
+# Computer → computer, as a file.
+cookie-use export --out all.cusession          # on the old Mac (asks for a password)
+cookie-use redeem all.cusession                # on the new one
+
+# Keep several Macs in sync through a CookieCloud server.
+cookie-use cloud setup --endpoint https://cookiecloud.example.com   # prints uuid + password
+cookie-use cloud setup --endpoint https://cookiecloud.example.com --uuid … --password …   # other Macs
+cookie-use cloud sync
+```
+
+`copy` writes into the destination through the chrome-use extension, so that
+profile has to be open in Chrome with the extension connected
+(`chrome-use browsers`). Nothing outside the site changes: cookies are
+expired one by one, never cleared wholesale.
+
+**CookieCloud compatibility.** Any CookieCloud server works, self-hosted
+(`docker run -p 8088:8088 easychen/cookiecloud`) or public. The upload uses
+CookieCloud's own encryption (`aes-128-cbc-fixed` by default, `legacy` for
+older extensions) and payload shape. Inside it, cookie-use's full multi-account
+vault is sealed a second time with argon2id + AES-GCM, because CookieCloud's
+MD5-derived key is weak and its format keeps one login per domain. Two-way
+with the CookieCloud browser extension:
+- what cookie-use pushes includes the most recently used login per site in
+  CookieCloud's `cookie_data`, so the extension can download it into a browser
+  (turn off with `--no-browser-compat`);
+- what the extension uploaded can be listed (`cloud domains`) and imported as
+  accounts (`cloud import github.com --id github/me`), keeping real expiry
+  dates (the extension itself drops them). `cloud sync` refuses to overwrite
+  an extension's upload unless you pass `--force`.
+
+Per account the newer copy wins; deletes and renames propagate.
 
 ### Cross-origin testing (reuse a prod login on `localhost`)
 

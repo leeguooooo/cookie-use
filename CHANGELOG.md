@@ -4,6 +4,8 @@ All notable changes to cookie-use are documented here. Versions follow semver.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-02
+
 ### Added
 - **`copy --site <d> --from <profile> --to <profile>`**: overwrite one Chrome
   profile's login for a site with another's. Only that site's cookies change

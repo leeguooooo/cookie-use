@@ -147,7 +147,7 @@ See <https://www.skills.sh/docs>. The skill lives at `skills/cookie-use/SKILL.md
 | `cookie-use redeem <f> [--password <pw>] [--id <new>]` | Import a shared bundle (installing cookie-use is the cost of redeeming) |
 | `cookie-use copy --site <d> --from <profile> --to <profile> [--dry-run]` | Overwrite one Chrome profile's login for a site with another's. Only that site's cookies change; the destination's old login is saved to the vault first (tag `backup`) so it can be restored |
 | `cookie-use export [ids…] [--site <d>] --out <f> [--password]` | Many accounts in one encrypted bundle for another computer; `redeem` it there (newer copy of each account wins) |
-| `cookie-use cloud setup\|sync\|pull\|status\|secret\|domains\|import\|disconnect` | Sync the vault through a [CookieCloud](https://github.com/easychen/CookieCloud) server (see below) |
+| `cookie-use cloud setup\|sync\|pull\|status\|secret\|domains\|import\|disconnect` | Sync the vault between computers through a private GitHub repo or a [CookieCloud](https://github.com/easychen/CookieCloud) server (see below) |
 | `cookie-use edit <id> [--label] [--hint] [--note] [--tags a,b]` | Edit metadata (`""` clears a field). Tags and notes are searchable via `list` |
 | `cookie-use rm <id>` / `revoke <id>` / `rename <id> <new>` | Manage entries |
 | `cookie-use wipe [--yes]` | Delete the entire vault |
@@ -202,16 +202,24 @@ cookie-use copy --site dash.cloudflare.com,cloudflare.com --from "Profile 3" --t
 cookie-use export --out all.cusession          # on the old Mac (asks for a password)
 cookie-use redeem all.cusession                # on the new one
 
-# Keep several Macs in sync through a CookieCloud server.
-cookie-use cloud setup --endpoint https://cookiecloud.example.com   # prints uuid + password
-cookie-use cloud setup --endpoint https://cookiecloud.example.com --uuid … --password …   # other Macs
+# Keep several Macs in sync — through a private GitHub repo (no server; uses your `gh` login)…
+cookie-use cloud setup --github you/cookie-use-sync --create      # first Mac: prints the password
+cookie-use cloud setup --github you/cookie-use-sync --password …  # other Macs
 cookie-use cloud sync
+# …or a CookieCloud server.
+cookie-use cloud setup --endpoint https://cookiecloud.example.com  # prints uuid + password
 ```
 
 `copy` writes into the destination through the chrome-use extension, so that
 profile has to be open in Chrome with the extension connected
 (`chrome-use browsers`). Nothing outside the site changes: cookies are
 expired one by one, never cleared wholesale.
+
+**GitHub private repo.** The vault is sealed into one `.cusession` file
+(argon2id + AES-GCM, the same format as `export`, so it can also be `redeem`ed
+by hand) and committed through `gh`. Public repos are refused. Two Macs pushing
+at once can't overwrite each other: GitHub rejects the stale write, and the
+loser re-pulls, merges and pushes again.
 
 **CookieCloud compatibility.** Any CookieCloud server works, self-hosted
 (`docker run -p 8088:8088 easychen/cookiecloud`) or public. The upload uses

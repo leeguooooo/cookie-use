@@ -116,7 +116,8 @@ cookie-use redeem <path.cusession> [--password <pw>] [--id <new-id>]
 cookie-use copy --site <d> --from "<profile>" --to "<profile>" [--dry-run]   # dest must be open with the chrome-use extension
 cookie-use export [--site <d>] --out all.cusession --password <pw>          # many accounts, one file
 cookie-use redeem all.cusession --password <pw>                            # newer copy of each account wins
-cookie-use cloud setup --endpoint <cookiecloud-url> [--uuid U --password P]  # CookieCloud-compatible sync
+cookie-use cloud setup --github <owner/repo> [--create] [--password P]      # sync via a private GitHub repo (gh login)
+cookie-use cloud setup --endpoint <cookiecloud-url> [--uuid U --password P]  # …or a CookieCloud server
 cookie-use cloud sync                                                       # pull, merge, push
 cookie-use cloud domains / cloud import <domain> --id <id>                  # use CookieCloud extension uploads
 

@@ -80,6 +80,14 @@ struct VaultData {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CloudConfig {
+    /// "cookiecloud" (a CookieCloud server at `endpoint`) or "github" (a file
+    /// in a private GitHub repo, through the user's `gh` login — no server).
+    #[serde(default = "default_backend")]
+    pub backend: String,
+    /// `owner/repo` for the github backend.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub github_repo: Option<String>,
+    #[serde(default)]
     pub endpoint: String,
     pub uuid: String,
     pub password: String,
@@ -98,6 +106,10 @@ pub struct CloudConfig {
 
 fn default_true() -> bool {
     true
+}
+
+fn default_backend() -> String {
+    "cookiecloud".into()
 }
 
 /// What a [`Vault::merge`] changed.

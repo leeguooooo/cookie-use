@@ -344,27 +344,47 @@ fn print(json_mode: bool, v: Value, human: impl FnOnce()) -> Result<()> {
     Ok(())
 }
 
-pub fn cmd_setup(
-    endpoint_url: &str,
-    uuid: Option<String>,
-    password: Option<String>,
-    crypto_type: &str,
-    browser_compat: bool,
-    json_mode: bool,
-) -> Result<()> {
-    if !matches!(crypto_type, FIXED | LEGACY) {
-        bail!("--crypto must be {FIXED} or {LEGACY}");
-    }
-    let url = endpoint_url.trim().trim_end_matches('/');
-    if !(url.starts_with("http://") || url.starts_with("https://")) {
-        bail!("--endpoint must be an http(s) URL, e.g. https://cookiecloud.example.com");
-    }
+pub struct SetupArgs {
+    pub endpoint: Option<String>,
+    pub github: Option<String>,
+    pub create: bool,
+    pub uuid: Option<String>,
+    pub password: Option<String>,
+    pub crypto_type: String,
+    pub browser_compat: bool,
+}
+
+pub fn cmd_setup(a: SetupArgs, json_mode: bool) -> Result<()> {
+    let (backend, endpoint, repo) = match (a.endpoint.as_deref(), a.github.as_deref()) {
+        (Some(_), Some(_)) => bail!(
+            "pass either --endpoint (CookieCloud server) or --github (private repo), not both"
+        ),
+        (None, None) => {
+            bail!("pass --github <owner/repo> (no server needed) or --endpoint <CookieCloud URL>")
+        }
+        (Some(url), None) => {
+            let url = url.trim().trim_end_matches('/');
+            if !(url.starts_with("http://") || url.starts_with("https://")) {
+                bail!("--endpoint must be an http(s) URL, e.g. https://cookiecloud.example.com");
+            }
+            if !matches!(a.crypto_type.as_str(), FIXED | LEGACY) {
+                bail!("--crypto must be {FIXED} or {LEGACY}");
+            }
+            ("cookiecloud", url.to_string(), None)
+        }
+        (None, Some(repo)) => {
+            let repo = github::ensure_private_repo(repo, a.create)?;
+            ("github", String::new(), Some(repo))
+        }
+    };
     let cfg = CloudConfig {
-        endpoint: url.to_string(),
-        uuid: uuid.unwrap_or_else(random_token),
-        password: password.unwrap_or_else(random_token),
-        crypto_type: crypto_type.to_string(),
-        browser_compat,
+        backend: backend.to_string(),
+        github_repo: repo,
+        endpoint,
+        uuid: a.uuid.unwrap_or_else(random_token),
+        password: a.password.unwrap_or_else(random_token),
+        crypto_type: a.crypto_type,
+        browser_compat: a.browser_compat,
         last_push: None,
         last_pull: None,
     };
@@ -373,15 +393,37 @@ pub fn cmd_setup(
     vault.save()?;
     print(
         json_mode,
-        json!({ "endpoint": cfg.endpoint, "uuid": cfg.uuid, "password": cfg.password, "crypto_type": cfg.crypto_type }),
+        json!({
+            "backend": cfg.backend, "endpoint": cfg.endpoint, "github_repo": cfg.github_repo,
+            "uuid": cfg.uuid, "password": cfg.password, "crypto_type": cfg.crypto_type,
+        }),
         || {
-            println!("cloud sync set up for {}", cfg.endpoint);
-            println!("  uuid:     {}", cfg.uuid);
-            println!("  password: {}", cfg.password);
-            println!("Use the same three values on your other computers (`cookie-use cloud setup --endpoint … --uuid … --password …`)");
-            println!("or in the CookieCloud browser extension. Then run `cookie-use cloud sync`.");
+            println!("cloud sync set up: {}", where_(&cfg));
+            if cfg.backend == "github" {
+                println!("  password: {}", cfg.password);
+                println!(
+                    "On your other computers: `cookie-use cloud setup --github {} --password …`",
+                    cfg.github_repo.as_deref().unwrap_or("")
+                );
+            } else {
+                println!("  uuid:     {}", cfg.uuid);
+                println!("  password: {}", cfg.password);
+                println!("Use the same values on your other computers (`cookie-use cloud setup --endpoint … --uuid … --password …`)");
+                println!("or in the CookieCloud browser extension.");
+            }
+            println!("Then run `cookie-use cloud sync`.");
         },
     )
+}
+
+fn where_(cfg: &CloudConfig) -> String {
+    match cfg.backend.as_str() {
+        "github" => format!(
+            "GitHub {} (private)",
+            cfg.github_repo.as_deref().unwrap_or("?")
+        ),
+        _ => cfg.endpoint.clone(),
+    }
 }
 
 pub fn cmd_status(json_mode: bool) -> Result<()> {
@@ -394,14 +436,13 @@ pub fn cmd_status(json_mode: bool) -> Result<()> {
     print(
         json_mode,
         json!({
-            "configured": true, "endpoint": cfg.endpoint, "uuid": cfg.uuid,
+            "configured": true, "backend": cfg.backend, "endpoint": cfg.endpoint,
+            "github_repo": cfg.github_repo, "uuid": cfg.uuid,
             "crypto_type": cfg.crypto_type, "browser_compat": cfg.browser_compat,
             "last_push": cfg.last_push, "last_pull": cfg.last_pull,
         }),
         || {
-            println!("endpoint:  {}", cfg.endpoint);
-            println!("uuid:      {}", cfg.uuid);
-            println!("crypto:    {}", cfg.crypto_type);
+            println!("where:     {}", where_(cfg));
             println!(
                 "last push: {}",
                 cfg.last_push
@@ -422,9 +463,13 @@ pub fn cmd_show_secret(json_mode: bool) -> Result<()> {
     let cfg = need(&Vault::open()?)?;
     print(
         json_mode,
-        json!({ "uuid": cfg.uuid, "password": cfg.password }),
+        json!({ "uuid": cfg.uuid, "password": cfg.password, "github_repo": cfg.github_repo }),
         || {
-            println!("uuid:     {}", cfg.uuid);
+            if let Some(r) = &cfg.github_repo {
+                println!("repo:     {r}");
+            } else {
+                println!("uuid:     {}", cfg.uuid);
+            }
             println!("password: {}", cfg.password);
         },
     )
@@ -435,28 +480,113 @@ pub fn cmd_disconnect(json_mode: bool) -> Result<()> {
     vault.set_cloud(None);
     vault.save()?;
     print(json_mode, json!({ "configured": false }), || {
-        println!("cloud sync turned off (the server copy is left as is)")
+        println!("cloud sync turned off (the remote copy is left as is)")
     })
+}
+
+/// What the remote holds right now.
+struct Remote {
+    vault: Option<Payload>,
+    /// A CookieCloud upload from the browser extension (no cookie-use vault inside).
+    browser_only: bool,
+    /// GitHub blob sha, for an optimistic-concurrency push.
+    version: Option<String>,
+}
+
+fn pull_remote(cfg: &CloudConfig) -> Result<Remote> {
+    if cfg.backend == "github" {
+        let repo = cfg
+            .github_repo
+            .as_deref()
+            .ok_or_else(|| anyhow!("github backend without a repo"))?;
+        return Ok(match github::read(repo)? {
+            None => Remote {
+                vault: None,
+                browser_only: false,
+                version: None,
+            },
+            Some((bytes, sha)) => Remote {
+                vault: Some(unseal_any(&bytes, &cfg.password).map_err(|e| {
+                    anyhow!("{e} — is this the same password as on your other computer?")
+                })?),
+                browser_only: false,
+                version: Some(sha),
+            },
+        });
+    }
+    let Some(r) = fetch(cfg)? else {
+        return Ok(Remote {
+            vault: None,
+            browser_only: false,
+            version: None,
+        });
+    };
+    let v = remote_vault(&r, &cfg.password)?;
+    Ok(Remote {
+        browser_only: v.is_none(),
+        vault: v,
+        version: None,
+    })
+}
+
+/// Push the vault. `Ok(false)` = the remote changed since we read it (retry).
+fn push_remote(cfg: &CloudConfig, vault: &Vault, version: Option<&str>) -> Result<bool> {
+    let bundle = seal_accounts(
+        &Payload {
+            accounts: vault.accounts().to_vec(),
+            deleted: vault.deleted().clone(),
+        },
+        &cfg.password,
+    )?;
+    if cfg.backend == "github" {
+        let repo = cfg
+            .github_repo
+            .as_deref()
+            .ok_or_else(|| anyhow!("github backend without a repo"))?;
+        return github::write(repo, &bundle, version);
+    }
+    let (cookie_data, local_storage_data) = if cfg.browser_compat {
+        browser_view(vault.accounts())
+    } else {
+        (Map::new(), Map::new())
+    };
+    let bundle: Value = serde_json::from_slice(&bundle)?;
+    upload(
+        cfg,
+        &json!({
+            "cookie_data": cookie_data,
+            "local_storage_data": local_storage_data,
+            "update_time": Utc::now().to_rfc3339(),
+            "cookie_use": { "version": 1, "bundle": bundle },
+        }),
+    )?;
+    Ok(true)
 }
 
 /// Pull, merge, and (unless `pull_only`) push the merged vault back.
 pub fn cmd_sync(pull_only: bool, force: bool, json_mode: bool) -> Result<()> {
     let mut vault = Vault::open()?;
     let mut cfg = need(&vault)?;
-    let remote = fetch(&cfg)?;
-
-    let mut report = crate::vault::MergeReport::default();
-    let mut browser_only = false;
-    if let Some(r) = &remote {
-        match remote_vault(r, &cfg.password)? {
-            Some(p) => report = vault.merge(p.accounts, &p.deleted),
-            None => browser_only = true,
-        }
-    }
-    cfg.last_pull = Some(Utc::now());
-
+    let mut total = crate::vault::MergeReport::default();
     let mut pushed = false;
-    if !pull_only {
+    let mut browser_only = false;
+
+    // A concurrent push from another computer makes ours fail its version
+    // check; re-pull, merge again and retry.
+    for attempt in 0..3 {
+        let remote = pull_remote(&cfg)?;
+        browser_only = remote.browser_only;
+        if let Some(p) = remote.vault {
+            let r = vault.merge(p.accounts, &p.deleted);
+            total.added.extend(r.added);
+            total.updated.extend(r.updated);
+            total.removed.extend(r.removed);
+            total.unchanged = r.unchanged;
+        }
+        cfg.last_pull = Some(Utc::now());
+        if pull_only {
+            break;
+        }
         if browser_only && !force {
             bail!(
                 "this uuid holds data uploaded by the CookieCloud browser extension — pushing would \
@@ -464,27 +594,14 @@ pub fn cmd_sync(pull_only: bool, force: bool, json_mode: bool) -> Result<()> {
                  separate uuid for cookie-use, or pass --force"
             );
         }
-        let bundle: Value = serde_json::from_slice(&seal_accounts(
-            &Payload {
-                accounts: vault.accounts().to_vec(),
-                deleted: vault.deleted().clone(),
-            },
-            &cfg.password,
-        )?)?;
-        let (cookie_data, local_storage_data) = if cfg.browser_compat {
-            browser_view(vault.accounts())
-        } else {
-            (Map::new(), Map::new())
-        };
-        let payload = json!({
-            "cookie_data": cookie_data,
-            "local_storage_data": local_storage_data,
-            "update_time": Utc::now().to_rfc3339(),
-            "cookie_use": { "version": 1, "bundle": bundle },
-        });
-        upload(&cfg, &payload)?;
-        cfg.last_push = Some(Utc::now());
-        pushed = true;
+        if push_remote(&cfg, &vault, remote.version.as_deref())? {
+            cfg.last_push = Some(Utc::now());
+            pushed = true;
+            break;
+        }
+        if attempt == 2 {
+            bail!("the remote kept changing while syncing — try again");
+        }
     }
     vault.set_cloud(Some(cfg));
     vault.save()?;
@@ -493,17 +610,17 @@ pub fn cmd_sync(pull_only: bool, force: bool, json_mode: bool) -> Result<()> {
     print(
         json_mode,
         json!({
-            "added": report.added, "updated": report.updated, "removed": report.removed,
-            "unchanged": report.unchanged, "pushed": pushed, "accounts": accounts,
+            "added": total.added, "updated": total.updated, "removed": total.removed,
+            "unchanged": total.unchanged, "pushed": pushed, "accounts": accounts,
             "remote_browser_only": browser_only,
         }),
         || {
             println!(
                 "pulled: {} new, {} updated, {} removed, {} unchanged",
-                report.added.len(),
-                report.updated.len(),
-                report.removed.len(),
-                report.unchanged
+                total.added.len(),
+                total.updated.len(),
+                total.removed.len(),
+                total.unchanged
             );
             if browser_only {
                 println!("note: the server copy came from the CookieCloud extension — see `cookie-use cloud domains`");
@@ -513,6 +630,173 @@ pub fn cmd_sync(pull_only: bool, force: bool, json_mode: bool) -> Result<()> {
             }
         },
     )
+}
+
+// ---------------------------------------------------------------------------
+// GitHub backend: one sealed bundle file in a private repo, via `gh`
+// ---------------------------------------------------------------------------
+
+mod github {
+    use super::*;
+
+    /// The synced file. It is an ordinary v2 `.cusession` bundle, so it can
+    /// also be `redeem`ed by hand.
+    pub const FILE: &str = "cookie-use-vault.cusession";
+
+    fn bin() -> String {
+        std::env::var("COOKIE_USE_GH_BIN").unwrap_or_else(|_| "gh".into())
+    }
+
+    struct Out {
+        ok: bool,
+        stdout: Vec<u8>,
+        stderr: String,
+    }
+
+    fn gh(args: &[&str], stdin: Option<&[u8]>) -> Result<Out> {
+        let mut child = Command::new(bin())
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|_| anyhow!("the GitHub CLI (`gh`) isn't installed — `brew install gh`, then `gh auth login`"))?;
+        if let Some(b) = stdin {
+            child.stdin.take().expect("piped").write_all(b)?;
+        } else {
+            drop(child.stdin.take());
+        }
+        let out = child.wait_with_output()?;
+        Ok(Out {
+            ok: out.status.success(),
+            stdout: out.stdout,
+            stderr: String::from_utf8_lossy(&out.stderr).trim().to_string(),
+        })
+    }
+
+    fn not_found(o: &Out) -> bool {
+        o.stderr.contains("404") || o.stderr.contains("Not Found")
+    }
+
+    fn valid_repo(repo: &str) -> Result<&str> {
+        let r = repo
+            .trim()
+            .trim_start_matches("https://github.com/")
+            .trim_end_matches(".git")
+            .trim_matches('/');
+        let ok = r.split('/').count() == 2
+            && r.split('/').all(|p| {
+                !p.is_empty()
+                    && p.chars()
+                        .all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c))
+            });
+        if !ok {
+            bail!("--github takes owner/repo, e.g. you/cookie-use-sync");
+        }
+        Ok(r)
+    }
+
+    /// Make sure `repo` exists and is private (creating it when asked).
+    pub fn ensure_private_repo(repo: &str, create: bool) -> Result<String> {
+        let repo = valid_repo(repo)?.to_string();
+        let o = gh(&["api", &format!("repos/{repo}"), "--jq", ".private"], None)?;
+        if o.ok {
+            if String::from_utf8_lossy(&o.stdout).trim() != "true" {
+                bail!("{repo} is public — sync needs a private repo (even though the file is encrypted)");
+            }
+            return Ok(repo);
+        }
+        if !not_found(&o) {
+            bail!(
+                "can't read {repo} with gh: {} (run `gh auth login`?)",
+                o.stderr
+            );
+        }
+        if !create {
+            bail!("{repo} doesn't exist — create it as a private repo, or pass --create");
+        }
+        let c = gh(
+            &[
+                "repo",
+                "create",
+                &repo,
+                "--private",
+                "--description",
+                "cookie-use encrypted vault sync (do not make public)",
+            ],
+            None,
+        )?;
+        if !c.ok {
+            bail!("couldn't create {repo}: {}", c.stderr);
+        }
+        Ok(repo)
+    }
+
+    /// The bundle bytes and blob sha, or `None` before the first push.
+    pub fn read(repo: &str) -> Result<Option<(Vec<u8>, String)>> {
+        let path = format!("repos/{repo}/contents/{FILE}");
+        let meta = gh(&["api", &path, "--jq", ".sha"], None)?;
+        if !meta.ok {
+            if not_found(&meta) {
+                return Ok(None);
+            }
+            bail!("reading {repo}: {}", meta.stderr);
+        }
+        let sha = String::from_utf8_lossy(&meta.stdout).trim().to_string();
+        // Raw media type: works for files past the contents API's 1 MB inline limit.
+        let raw = gh(
+            &["api", "-H", "Accept: application/vnd.github.raw", &path],
+            None,
+        )?;
+        if !raw.ok {
+            bail!("reading {repo}: {}", raw.stderr);
+        }
+        Ok(Some((raw.stdout, sha)))
+    }
+
+    /// Commit the bundle. `Ok(false)` when `sha` is stale (someone pushed first).
+    pub fn write(repo: &str, bundle: &[u8], sha: Option<&str>) -> Result<bool> {
+        let host = std::process::Command::new("hostname")
+            .arg("-s")
+            .output()
+            .ok()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .filter(|h| !h.is_empty())
+            .unwrap_or_else(|| "a computer".into());
+        let mut body = json!({
+            "message": format!("cookie-use sync from {host}"),
+            "content": B64.encode(bundle),
+        });
+        if let Some(s) = sha {
+            body["sha"] = json!(s);
+        }
+        let o = gh(
+            &[
+                "api",
+                "-X",
+                "PUT",
+                &format!("repos/{repo}/contents/{FILE}"),
+                "--input",
+                "-",
+            ],
+            Some(body.to_string().as_bytes()),
+        )?;
+        if o.ok {
+            return Ok(true);
+        }
+        // Stale sha → GitHub answers 409 "<file> does not match <sha>".
+        if o.stderr.contains("409") || o.stderr.contains("does not match") {
+            return Ok(false);
+        }
+        bail!("pushing to {repo}: {}", o.stderr)
+    }
+}
+
+fn need_cookiecloud(cfg: &CloudConfig) -> Result<()> {
+    if cfg.backend == "github" {
+        bail!("this only applies to a CookieCloud server (CookieCloud extension uploads)");
+    }
+    Ok(())
 }
 
 fn remote_cookie_data(cfg: &CloudConfig) -> Result<Map<String, Value>> {
@@ -527,6 +811,7 @@ fn remote_cookie_data(cfg: &CloudConfig) -> Result<Map<String, Value>> {
 /// Domains in the remote `cookie_data` (what the CookieCloud extension uploaded).
 pub fn cmd_domains(json_mode: bool) -> Result<()> {
     let cfg = need(&Vault::open()?)?;
+    need_cookiecloud(&cfg)?;
     let data = remote_cookie_data(&cfg)?;
     let rows: Vec<(String, usize)> = data
         .iter()
@@ -547,6 +832,7 @@ pub fn cmd_domains(json_mode: bool) -> Result<()> {
 pub fn cmd_import(site: &str, id: &str, label: Option<String>, json_mode: bool) -> Result<()> {
     let mut vault = Vault::open()?;
     let cfg = need(&vault)?;
+    need_cookiecloud(&cfg)?;
     let data = remote_cookie_data(&cfg)?;
     let hosts: Vec<String> = site
         .split(',')

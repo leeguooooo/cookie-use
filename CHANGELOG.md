@@ -4,6 +4,12 @@ All notable changes to cookie-use are documented here. Versions follow semver.
 
 ## [Unreleased]
 
+### Changed
+- `install-app.sh` installs without sudo, so the app is owned by you and
+  re-running it upgrades with no password. sudo is used once, only to remove a
+  root-owned copy left by the old installer. `COOKIE_USE_APP_DIR` picks another
+  folder (e.g. `~/Applications`). It launches the app when done.
+
 ## [0.6.1] - 2026-10-01
 
 ### Changed

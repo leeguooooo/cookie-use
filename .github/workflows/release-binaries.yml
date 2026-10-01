@@ -46,12 +46,11 @@ jobs:
             target/${{ matrix.target }}/release/${{ matrix.asset }}.tar.gz
             target/${{ matrix.target }}/release/${{ matrix.asset }}.tar.gz.sha256
 
-  # #6：README / install-app.sh 一直让用户下 CookieUse.dmg，但**从来没有哪个流水线发布过它**，
-  # 于是那条 GUI 安装命令自 v0.3.0 起恒 404。app/build-dmg.sh 早就在仓库里躺着，只是没人跑。
-  # ad-hoc 签名、不做公证——与 install-app.sh 的假设一致（curl 下载不带隔离属性，
-  # 且脚本装完会 xattr -cr）。
+  # Developer ID signed + notarized + stapled (app and dmg), so it opens on a
+  # double-click with no Gatekeeper warning. Same secrets as ChooseBrowser's
+  # direct release; the identity lives in a throwaway keychain.
   dmg:
-    name: Build and publish CookieUse.dmg
+    name: Build, sign, notarize and publish CookieUse.dmg
     # The app targets macOS 26 and the project is Xcode format 77: macos-14's
     # Xcode 15 can open neither (the v0.4.0 dmg build failed exactly there).
     runs-on: macos-26
@@ -61,7 +60,38 @@ jobs:
       - name: Install xcodegen
         run: brew install xcodegen
 
-      - name: Build app + dmg
+      - name: Import Developer ID certificate and API key
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_KEY_P8_BASE64: ${{ secrets.ASC_KEY_P8_BASE64 }}
+          MACOS_CERTIFICATE_BASE64: ${{ secrets.MACOS_CERTIFICATE_BASE64 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          for v in ASC_KEY_ID ASC_KEY_P8_BASE64 MACOS_CERTIFICATE_BASE64 MACOS_CERTIFICATE_PASSWORD; do
+            [ -n "${!v:-}" ] || { echo "::error::missing secret $v"; exit 1; }
+          done
+          cert="$RUNNER_TEMP/devid.p12"; kc="$RUNNER_TEMP/signing.keychain-db"; key="$RUNNER_TEMP/AuthKey_${ASC_KEY_ID}.p8"
+          kcpw="$(openssl rand -hex 16)"
+          printf '%s' "$MACOS_CERTIFICATE_BASE64" | base64 --decode > "$cert"
+          printf '%s' "$ASC_KEY_P8_BASE64" | base64 --decode > "$key"
+          chmod 600 "$cert" "$key"
+          security create-keychain -p "$kcpw" "$kc"
+          security set-keychain-settings -lut 21600 "$kc"
+          security unlock-keychain -p "$kcpw" "$kc"
+          security import "$cert" -P "$MACOS_CERTIFICATE_PASSWORD" -A -T /usr/bin/codesign -T /usr/bin/security -k "$kc"
+          security list-keychains -d user -s "$kc"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$kcpw" "$kc" >/dev/null
+          rm -f "$cert"
+          echo "SIGNING_KEYCHAIN=$kc" >> "$GITHUB_ENV"
+          echo "ASC_KEY_PATH=$key" >> "$GITHUB_ENV"
+
+      - name: Build, sign and notarize app + dmg
+        env:
+          SIGNING_IDENTITY: Developer ID Application
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
         run: bash app/build-dmg.sh
 
       - name: Verify the dmg actually mounts and contains the app
@@ -72,8 +102,13 @@ jobs:
           test -d "$mnt/CookieUse.app" || { echo "dmg 里没有 CookieUse.app"; exit 1; }
           hdiutil detach "$mnt" -quiet
 
+      - name: Checksum
+        run: cd app/build && shasum -a 256 CookieUse.dmg > CookieUse.dmg.sha256
+
       - name: Upload to release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event.inputs.tag || github.ref_name }}
-          files: app/build/CookieUse.dmg
+          files: |
+            app/build/CookieUse.dmg
+            app/build/CookieUse.dmg.sha256

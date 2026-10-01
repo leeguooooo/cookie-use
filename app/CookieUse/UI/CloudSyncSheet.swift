@@ -23,6 +23,8 @@ struct CloudSyncSheet: View {
     @State private var browserCompat = true
 
     @State private var password = ""
+    @State private var backups: [String] = []
+    @State private var restoreCandidate: String?
     @State private var secret: CloudSecret?
     @State private var busy = false
     @State private var error: String?
@@ -65,7 +67,16 @@ struct CloudSyncSheet: View {
         }
         .padding(24)
         .frame(width: 520)
+        .confirmationDialog("Restore logins from \(restoreCandidate.map(snapshotTitle) ?? "")?",
+                            isPresented: Binding(get: { restoreCandidate != nil }, set: { if !$0 { restoreCandidate = nil } }),
+                            titleVisibility: .visible) {
+            Button("Restore") { if let n = restoreCandidate { Task { await restore(n) } } }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Your current logins are snapshotted first. The next sync sends the restored state to your other Macs.")
+        }
         .task {
+            backups = await CLIBridge.shared.cloudBackups()
             await model.loadCloud()
             ghLogin = await CLIBridge.shared.githubLogin()
             ghChecked = true
@@ -166,6 +177,16 @@ struct CloudSyncSheet: View {
             HStack {
                 Button { Task { await sync() } } label: { Label("Sync now", systemImage: "arrow.triangle.2.circlepath") }
                     .buttonStyle(.borderedProminent).disabled(busy)
+                Menu("Restore…") {
+                    if backups.isEmpty {
+                        Text("No snapshots yet — one is saved whenever a sync changes your logins")
+                    }
+                    ForEach(backups, id: \.self) { name in
+                        Button(snapshotTitle(name)) { restoreCandidate = name }
+                    }
+                }
+                .fixedSize()
+                .help("Go back to how your logins were before a sync")
                 Spacer()
                 Button("Turn off", role: .destructive) { Task { await disconnect() } }.disabled(busy)
             }
@@ -224,6 +245,29 @@ struct CloudSyncSheet: View {
         busy = true
         error = nil
         if let failure = await model.syncNow() { error = failure }
+        busy = false
+    }
+
+    /// "vault-20261002-083012.123.enc" → "Oct 2, 08:30 (3 hours ago)".
+    private func snapshotTitle(_ name: String) -> String {
+        let stamp = name.replacingOccurrences(of: "vault-", with: "").replacingOccurrences(of: ".enc", with: "")
+        let f = DateFormatter()
+        f.dateFormat = "yyyyMMdd-HHmmss.SSS"
+        f.timeZone = TimeZone(identifier: "UTC")
+        guard let d = f.date(from: stamp) else { return name }
+        return "\(d.formatted(date: .abbreviated, time: .shortened)) (\(d.relative))"
+    }
+
+    private func restore(_ name: String) async {
+        busy = true
+        error = nil
+        do {
+            try await CLIBridge.shared.cloudRestore(name)
+            await model.refresh()
+            model.show(.success("Restored logins from \(snapshotTitle(name))"))
+            backups = await CLIBridge.shared.cloudBackups()
+            _ = await model.syncNow()
+        } catch { self.error = error.localizedDescription }
         busy = false
     }
 

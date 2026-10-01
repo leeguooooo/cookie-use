@@ -196,6 +196,8 @@ mod tests {
             created_at: Utc::now(),
             updated_at: Utc::now(),
             last_used_at: None,
+            session_updated_at: None,
+            meta_updated_at: None,
             status: crate::vault::Status::Unknown,
             proxy: None,
             fingerprint: None,

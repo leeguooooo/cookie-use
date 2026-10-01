@@ -35,6 +35,14 @@ pub struct Account {
     pub updated_at: DateTime<Utc>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_used_at: Option<DateTime<Utc>>,
+    /// When the session (cookies / localStorage) last changed, and when the
+    /// user's metadata (label / hint / note / tags) last changed. A sync merges
+    /// the two independently, so editing tags on one Mac never throws away a
+    /// fresher login captured on another. Missing (older vaults) = `updated_at`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_updated_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub meta_updated_at: Option<DateTime<Utc>>,
     #[serde(default)]
     pub status: Status,
     // Reserved for v2 (anti-correlation). Kept optional so the model is stable.
@@ -42,6 +50,30 @@ pub struct Account {
     pub proxy: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fingerprint: Option<Value>,
+}
+
+impl Account {
+    pub fn session_ts(&self) -> DateTime<Utc> {
+        self.session_updated_at.unwrap_or(self.updated_at)
+    }
+
+    pub fn meta_ts(&self) -> DateTime<Utc> {
+        self.meta_updated_at.unwrap_or(self.updated_at)
+    }
+
+    /// Mark the session as changed now (keeps `updated_at` = latest change).
+    pub fn touch_session(&mut self) {
+        let now = Utc::now();
+        self.session_updated_at = Some(now);
+        self.updated_at = now;
+    }
+
+    /// Mark the metadata as changed now.
+    pub fn touch_meta(&mut self) {
+        let now = Utc::now();
+        self.meta_updated_at = Some(now);
+        self.updated_at = now;
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -118,6 +150,10 @@ pub struct MergeReport {
     pub added: Vec<String>,
     pub updated: Vec<String>,
     pub removed: Vec<String>,
+    /// Accounts changed on both sides (e.g. tags here, login there) whose
+    /// changes were combined rather than one side discarded.
+    #[serde(default)]
+    pub merged: Vec<String>,
     pub unchanged: usize,
 }
 
@@ -125,12 +161,45 @@ pub struct Vault {
     data: VaultData,
     key: [u8; 32],
     path: PathBuf,
+    /// Exclusive lock on `vault.lock`, held while this handle lives, so two
+    /// processes (the app, an agent's CLI, a sync) can't lose each other's writes.
+    _lock: Option<std::fs::File>,
+}
+
+/// Take the vault lock, waiting up to 30 s for another cookie-use process.
+fn lock_vault(path: &std::path::Path) -> Result<std::fs::File> {
+    let lock_path = path.with_extension("lock");
+    if let Some(dir) = lock_path.parent().filter(|d| !d.as_os_str().is_empty()) {
+        std::fs::create_dir_all(dir).context("creating the vault directory")?;
+    }
+    let f = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&lock_path)
+        .with_context(|| format!("opening {}", lock_path.display()))?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        match f.try_lock() {
+            Ok(()) => return Ok(f),
+            Err(std::fs::TryLockError::WouldBlock) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Err(std::fs::TryLockError::WouldBlock) => {
+                return Err(anyhow!(
+                    "the vault is busy (another cookie-use is writing) — try again"
+                ))
+            }
+            Err(std::fs::TryLockError::Error(e)) => return Err(e).context("locking the vault"),
+        }
+    }
 }
 
 impl Vault {
     /// Open (or initialize) the vault at `~/.cookie-use/vault.enc`.
     pub fn open() -> Result<Self> {
         let path = vault_path()?;
+        let lock = lock_vault(&path)?;
         let key = crate::keychain::get_or_create_key()?;
         let data = if path.exists() {
             let raw = std::fs::read_to_string(&path).context("reading vault file")?;
@@ -142,7 +211,39 @@ impl Vault {
         } else {
             VaultData::default()
         };
-        Ok(Self { data, key, path })
+        Ok(Self {
+            data,
+            key,
+            path,
+            _lock: Some(lock),
+        })
+    }
+
+    /// Make every account the newest copy (after a restore) and forget local
+    /// deletes of ids that are back.
+    pub fn mark_all_current(&mut self) {
+        for a in &mut self.data.accounts {
+            a.touch_session();
+            a.touch_meta();
+        }
+        let ids: Vec<String> = self.data.accounts.iter().map(|a| a.id.clone()).collect();
+        for id in ids {
+            self.data.deleted.remove(&id);
+        }
+    }
+
+    /// An unlocked, unsaveable copy for a dry-run merge.
+    pub fn scratch_copy(other: &Vault) -> Vault {
+        Vault {
+            data: VaultData {
+                accounts: other.data.accounts.clone(),
+                deleted: other.data.deleted.clone(),
+                cloud: None,
+            },
+            key: other.key,
+            path: PathBuf::from("/nonexistent"),
+            _lock: None,
+        }
     }
 
     pub fn accounts(&self) -> &[Account] {
@@ -193,9 +294,11 @@ impl Vault {
         self.data.cloud = cfg;
     }
 
-    /// Merge accounts from another machine. Per id the newer `updated_at` wins;
-    /// a delete wins over any copy that is older than it. Never touches an
-    /// account the other side doesn't mention.
+    /// Merge accounts from another machine. Per account, the session (cookies,
+    /// localStorage) and the metadata (label, hint, note, tags) are merged
+    /// separately — each side's newer half wins — and `last_used_at` keeps the
+    /// latest. A delete wins over any copy older than it. Accounts the other
+    /// side doesn't mention are never touched.
     pub fn merge(
         &mut self,
         remote: Vec<Account>,
@@ -224,23 +327,44 @@ impl Vault {
             {
                 continue; // deleted here after that copy was made
             }
-            match self.find_mut(&acct.id) {
-                None => {
-                    report.added.push(acct.id.clone());
-                    self.data.deleted.remove(&acct.id);
-                    self.data.accounts.push(acct);
+            let Some(local) = self.find_mut(&acct.id) else {
+                report.added.push(acct.id.clone());
+                self.data.deleted.remove(&acct.id);
+                self.data.accounts.push(acct);
+                continue;
+            };
+            let take_session = acct.session_ts() > local.session_ts();
+            let take_meta = acct.meta_ts() > local.meta_ts();
+            if take_session {
+                local.site = acct.site.clone();
+                local.cookies = acct.cookies.clone();
+                local.local_storage = acct.local_storage.clone();
+                local.status = acct.status;
+                local.session_updated_at = Some(acct.session_ts());
+            }
+            if take_meta {
+                local.label = acct.label.clone();
+                local.account_hint = acct.account_hint.clone();
+                local.note = acct.note.clone();
+                local.tags = acct.tags.clone();
+                local.meta_updated_at = Some(acct.meta_ts());
+            }
+            if acct.last_used_at > local.last_used_at {
+                local.last_used_at = acct.last_used_at;
+            }
+            local.created_at = local.created_at.min(acct.created_at);
+            local.updated_at = local.session_ts().max(local.meta_ts());
+            match (take_session, take_meta) {
+                (false, false) => report.unchanged += 1,
+                (true, true) => report.updated.push(acct.id.clone()),
+                // One half from each side: both edits survive.
+                (true, false) if local.meta_ts() > acct.meta_ts() => {
+                    report.merged.push(acct.id.clone())
                 }
-                Some(local) if acct.updated_at > local.updated_at => {
-                    report.updated.push(acct.id.clone());
-                    *local = acct;
+                (false, true) if local.session_ts() > acct.session_ts() => {
+                    report.merged.push(acct.id.clone())
                 }
-                Some(local) => {
-                    // Same or older copy: keep ours, but remember the latest use.
-                    if acct.last_used_at > local.last_used_at {
-                        local.last_used_at = acct.last_used_at;
-                    }
-                    report.unchanged += 1;
-                }
+                _ => report.updated.push(acct.id.clone()),
             }
         }
         report
@@ -278,6 +402,11 @@ pub fn config_dir() -> Result<PathBuf> {
         .filter(|parent| !parent.as_os_str().is_empty())
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(".")))
+}
+
+/// The vault file's path (for snapshots).
+pub fn vault_file() -> Result<PathBuf> {
+    vault_path()
 }
 
 fn vault_path() -> Result<PathBuf> {
@@ -348,6 +477,8 @@ mod merge_tests {
             created_at: updated,
             updated_at: updated,
             last_used_at: None,
+            session_updated_at: None,
+            meta_updated_at: None,
             status: Status::Live,
             proxy: None,
             fingerprint: None,
@@ -362,6 +493,7 @@ mod merge_tests {
             },
             key: [0; 32],
             path: PathBuf::from("/nonexistent"),
+            _lock: None,
         }
     }
 
@@ -377,6 +509,34 @@ mod merge_tests {
         assert_eq!(r.added, vec!["c"]);
         assert_eq!(r.unchanged, 1);
         assert_eq!(v.find("a").unwrap().label.as_deref(), Some("remote"));
+    }
+
+    #[test]
+    fn session_and_metadata_merge_independently() {
+        let t = Utc::now();
+        let mut local = acct("a", t);
+        local.tags = vec!["old".into()];
+        local.cookies = vec![serde_json::json!({"name": "sid", "value": "fresh"})];
+        local.session_updated_at = Some(t + Duration::seconds(10)); // re-captured here
+        local.meta_updated_at = Some(t);
+        local.updated_at = t + Duration::seconds(10);
+        let mut v = vault(vec![local]);
+
+        let mut remote = acct("a", t);
+        remote.tags = vec!["prod".into()];
+        remote.cookies = vec![serde_json::json!({"name": "sid", "value": "stale"})];
+        remote.session_updated_at = Some(t);
+        remote.meta_updated_at = Some(t + Duration::seconds(5)); // tagged there
+        remote.updated_at = t + Duration::seconds(5);
+        remote.last_used_at = Some(t + Duration::seconds(20));
+
+        let r = v.merge(vec![remote], &BTreeMap::new());
+        assert_eq!(r.merged, vec!["a"]);
+        let a = v.find("a").unwrap();
+        assert_eq!(a.tags, vec!["prod"], "remote's newer tags");
+        assert_eq!(a.cookies[0]["value"], "fresh", "our newer login");
+        assert_eq!(a.last_used_at, Some(t + Duration::seconds(20)));
+        assert_eq!(a.updated_at, t + Duration::seconds(10));
     }
 
     #[test]

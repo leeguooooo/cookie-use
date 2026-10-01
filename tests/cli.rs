@@ -698,7 +698,7 @@ if [ "$1" = repo ] && [ "$2" = create ]; then touch "$store/created"; exit 0; fi
 [ "$1" = api ] || exit 2; shift
 case "$*" in
   *"--jq .private"*) [ -e "$store/created" ] && echo true || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; } ;;
-  *"--jq .sha"*) [ -e "$f" ] && cat "$shafile" || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; } ;;
+  *"--jq .sha"*) [ -n "$FAKE_GH_SLEEP" ] && sleep "$FAKE_GH_SLEEP"; [ -e "$f" ] && cat "$shafile" || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; } ;;
   *"application/vnd.github.raw"*) cat "$f" ;;
   *"-X PUT"*)
     body="$(cat)"
@@ -768,4 +768,147 @@ fn github_backend_syncs_through_a_private_repo_and_retries_conflicts() {
     assert_eq!(r["added"], serde_json::json!(["y/bob"]));
     // CookieCloud-only commands say so on the github backend.
     assert!(stderr_of(&with_gh(&a, &["cloud", "domains"])).contains("CookieCloud"));
+}
+
+fn show_json(sb: &Sandbox, id: &str) -> serde_json::Value {
+    json_of(&sb.cmd().args(["show", id, "--json"]).output().unwrap())
+}
+
+/// Two Macs sharing one fake GitHub repo.
+fn two_synced_macs() -> (Sandbox, Sandbox, Sandbox, std::path::PathBuf) {
+    let shared = Sandbox::new();
+    let gh = fake_gh(&shared);
+    let (a, b) = (Sandbox::new(), Sandbox::new());
+    a.seed("x/alice", "x.com");
+    let cfg = json_of(
+        &a.cmd()
+            .env("COOKIE_USE_GH_BIN", &gh)
+            .args([
+                "cloud", "setup", "--github", "me/sync", "--create", "--json",
+            ])
+            .output()
+            .unwrap(),
+    );
+    let pw = cfg["password"].as_str().unwrap().to_string();
+    a.cmd()
+        .env("COOKIE_USE_GH_BIN", &gh)
+        .args(["cloud", "sync"])
+        .output()
+        .unwrap();
+    b.cmd()
+        .env("COOKIE_USE_GH_BIN", &gh)
+        .args(["cloud", "setup", "--github", "me/sync", "--password", &pw])
+        .output()
+        .unwrap();
+    b.cmd()
+        .env("COOKIE_USE_GH_BIN", &gh)
+        .args(["cloud", "sync"])
+        .output()
+        .unwrap();
+    (shared, a, b, gh)
+}
+
+#[test]
+fn sync_keeps_tags_from_one_mac_and_a_fresh_login_from_the_other() {
+    let (_shared, a, b, gh) = two_synced_macs();
+    let sync = |sb: &Sandbox| {
+        json_of(
+            &sb.cmd()
+                .env("COOKIE_USE_GH_BIN", &gh)
+                .args(["cloud", "sync", "--json"])
+                .output()
+                .unwrap(),
+        )
+    };
+
+    // A tags the account; B re-captures its login (3 cookies instead of 2).
+    a.cmd()
+        .args(["edit", "x/alice", "--tags", "prod"])
+        .output()
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    let f = b.path("fresh.cookies");
+    std::fs::write(&f, "session=new; token=new; extra=1").unwrap();
+    b.cmd()
+        .args(["import", "--file"])
+        .arg(&f)
+        .args(["--site", "x.com", "--id", "x/alice"])
+        .output()
+        .unwrap();
+
+    sync(&a);
+    let r = sync(&b);
+    assert_eq!(r["merged"], serde_json::json!(["x/alice"]), "{r}");
+    sync(&a);
+    for sb in [&a, &b] {
+        let acct = show_json(sb, "x/alice");
+        assert_eq!(acct["tags"], serde_json::json!(["prod"]));
+        assert_eq!(acct["cookies"], 3);
+    }
+}
+
+#[test]
+fn a_local_write_during_a_sync_is_not_lost() {
+    let (_shared, a, _b, gh) = two_synced_macs();
+    // The sync stalls on the network; meanwhile an agent edits the vault.
+    let mut sync = a
+        .cmd()
+        .env("COOKIE_USE_GH_BIN", &gh)
+        .env("FAKE_GH_SLEEP", "2")
+        .args(["cloud", "sync"])
+        .spawn()
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let out = a
+        .cmd()
+        .args(["edit", "x/alice", "--note", "written mid-sync"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", stderr_of(&out));
+    assert!(sync.wait().unwrap().success());
+    assert_eq!(show_json(&a, "x/alice")["note"], "written mid-sync");
+}
+
+#[test]
+fn a_sync_that_changes_the_vault_can_be_restored_and_the_restore_wins() {
+    let (_shared, a, b, gh) = two_synced_macs();
+    let with_gh = |sb: &Sandbox, args: &[&str]| {
+        sb.cmd()
+            .env("COOKIE_USE_GH_BIN", &gh)
+            .args(args)
+            .output()
+            .unwrap()
+    };
+
+    b.cmd().args(["rm", "x/alice"]).output().unwrap();
+    with_gh(&b, &["cloud", "sync"]);
+    let r = json_of(&with_gh(&a, &["cloud", "sync", "--json"]));
+    assert_eq!(r["removed"], serde_json::json!(["x/alice"]));
+    let snap = r["snapshot"]
+        .as_str()
+        .expect("a snapshot before the change")
+        .to_string();
+
+    let backups = json_of(
+        &a.cmd()
+            .args(["cloud", "backups", "--json"])
+            .output()
+            .unwrap(),
+    );
+    assert!(backups["backups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|n| n == snap.as_str()));
+    let r = json_of(
+        &a.cmd()
+            .args(["cloud", "restore", &snap, "--json"])
+            .output()
+            .unwrap(),
+    );
+    assert_eq!(r["accounts"], 1);
+    // The restored account goes back out to B instead of being deleted again.
+    with_gh(&a, &["cloud", "sync"]);
+    let r = json_of(&with_gh(&b, &["cloud", "sync", "--json"]));
+    assert_eq!(r["added"], serde_json::json!(["x/alice"]), "{r}");
 }

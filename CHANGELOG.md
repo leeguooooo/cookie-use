@@ -4,6 +4,8 @@ All notable changes to cookie-use are documented here. Versions follow semver.
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-10-02
+
 ### Changed
 - Sync follows renames: an edit to the old id made on another computer lands
   on the renamed account instead of resurrecting the old id as a duplicate.

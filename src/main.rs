@@ -5,7 +5,9 @@
 
 mod act_as;
 mod chrome_use;
+mod cloud;
 mod confirm;
+mod copy;
 mod crypto;
 mod fingerprint;
 mod keychain;
@@ -34,6 +36,52 @@ struct Cli {
     /// subcommand). Never prints cookie values — only counts/metadata.
     #[arg(long, global = true)]
     json: bool,
+}
+
+#[derive(Subcommand)]
+enum CloudCmd {
+    /// Save the server and credentials (uuid/password are generated if omitted;
+    /// reuse the same three on every computer, or in the CookieCloud extension).
+    Setup {
+        /// CookieCloud server URL, e.g. https://cookiecloud.example.com
+        #[arg(long)]
+        endpoint: String,
+        #[arg(long)]
+        uuid: Option<String>,
+        #[arg(long)]
+        password: Option<String>,
+        /// aes-128-cbc-fixed (default) or legacy (older CookieCloud extensions).
+        #[arg(long, default_value = "aes-128-cbc-fixed")]
+        crypto: String,
+        /// Don't also publish the latest login per site for the CookieCloud extension.
+        #[arg(long)]
+        no_browser_compat: bool,
+    },
+    /// Show the sync settings (the password stays hidden; see `secret`).
+    Status,
+    /// Print the uuid and password, to set up another computer.
+    Secret,
+    /// Pull from the server, merge (newer copy of each account wins), push back.
+    Sync {
+        /// Overwrite data that the CookieCloud extension uploaded under this uuid.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Pull and merge only; don't upload.
+    Pull,
+    /// List domains the CookieCloud browser extension uploaded under this uuid.
+    Domains,
+    /// Create an account from the CookieCloud extension's data for a site.
+    Import {
+        /// Domain(s), comma-separated.
+        site: String,
+        #[arg(long)]
+        id: String,
+        #[arg(long)]
+        label: Option<String>,
+    },
+    /// Forget the sync settings (the server copy stays).
+    Disconnect,
 }
 
 #[derive(Subcommand)]
@@ -150,7 +198,55 @@ enum Cmd {
         #[arg(long)]
         password: Option<String>,
     },
-    /// Import a session bundle produced by `share` into the vault.
+    /// Overwrite one Chrome profile's login for a site with another profile's.
+    /// Only that site's cookies change; the destination's previous login is
+    /// saved to the vault first (tag "backup") so it can be restored.
+    Copy {
+        /// Website (domain or comma list, e.g. "dash.cloudflare.com,cloudflare.com").
+        #[arg(long)]
+        site: String,
+        /// Source profile: directory ("Profile 3"), display name, or email.
+        #[arg(long)]
+        from: String,
+        /// Destination profile (must be open with the chrome-use extension).
+        #[arg(long)]
+        to: String,
+        /// Keep destination cookies for the site that the source doesn't have.
+        #[arg(long)]
+        keep_extra: bool,
+        /// Don't save the destination's previous login.
+        #[arg(long)]
+        no_backup: bool,
+        /// Show what would change without writing anything.
+        #[arg(long)]
+        dry_run: bool,
+        /// Skip the biometric/TTY confirmation.
+        #[arg(long)]
+        no_confirm: bool,
+    },
+    /// Sync the vault between computers through a CookieCloud server
+    /// (self-hosted or public; wire-compatible with CookieCloud).
+    Cloud {
+        #[command(subcommand)]
+        action: CloudCmd,
+    },
+    /// Export many accounts into one password-encrypted bundle, to move them to
+    /// another computer (`cookie-use redeem <file>` there). Everything by default.
+    Export {
+        /// Specific account ids (default: all, or those matching --site).
+        ids: Vec<String>,
+        /// Only accounts for this website (domain or URL, forgiving match).
+        #[arg(long)]
+        site: Option<String>,
+        /// Output path (default: "cookie-use-<timestamp>.cusession").
+        #[arg(long)]
+        out: Option<String>,
+        /// Bundle password. Prompted on the TTY if omitted.
+        #[arg(long)]
+        password: Option<String>,
+    },
+    /// Import a session bundle produced by `share` or `export` into the vault.
+    /// Multi-account bundles merge: per account the newer copy wins.
     Redeem {
         /// Path to a .cusession bundle.
         bundle: String,
@@ -354,6 +450,53 @@ fn run(cli: Cli) -> Result<()> {
         Cmd::Share { id, out, password } => share::cmd_share(
             &Vault::open()?,
             &id,
+            out.as_deref(),
+            password.as_deref(),
+            json,
+        ),
+        Cmd::Copy {
+            site,
+            from,
+            to,
+            keep_extra,
+            no_backup,
+            dry_run,
+            no_confirm,
+        } => copy::cmd_copy(copy::CopyArgs {
+            site: &site,
+            from: &from,
+            to: &to,
+            keep_extra,
+            backup: !no_backup,
+            confirm: !no_confirm,
+            dry_run,
+            json,
+        }),
+        Cmd::Cloud { action } => match action {
+            CloudCmd::Setup {
+                endpoint,
+                uuid,
+                password,
+                crypto,
+                no_browser_compat,
+            } => cloud::cmd_setup(&endpoint, uuid, password, &crypto, !no_browser_compat, json),
+            CloudCmd::Status => cloud::cmd_status(json),
+            CloudCmd::Secret => cloud::cmd_show_secret(json),
+            CloudCmd::Sync { force } => cloud::cmd_sync(false, force, json),
+            CloudCmd::Pull => cloud::cmd_sync(true, false, json),
+            CloudCmd::Domains => cloud::cmd_domains(json),
+            CloudCmd::Import { site, id, label } => cloud::cmd_import(&site, &id, label, json),
+            CloudCmd::Disconnect => cloud::cmd_disconnect(json),
+        },
+        Cmd::Export {
+            ids,
+            site,
+            out,
+            password,
+        } => share::cmd_export(
+            &Vault::open()?,
+            &ids,
+            site.as_deref(),
             out.as_deref(),
             password.as_deref(),
             json,
@@ -581,6 +724,11 @@ fn normalize_site_filter(s: &str) -> String {
 /// loose substrings on a domain, and falls back to id / label / hint so a user
 /// can also search by a memorable name (`leo`, `wind`). `cloudflare.com` matches
 /// an account stored as `cloudflare.com,dash.cloudflare.com` and vice-versa.
+/// Site filter shared by commands outside this file (export, cloud).
+pub(crate) fn site_matches(a: &Account, filter: &str) -> bool {
+    account_matches(a, &normalize_site_filter(filter))
+}
+
 fn account_matches(a: &Account, needle: &str) -> bool {
     if domain_matches(&a.site, needle) {
         return true;
@@ -958,6 +1106,7 @@ fn cmd_rename(id: &str, new_id: &str, json: bool) -> Result<()> {
         .ok_or_else(|| anyhow!("no account \"{id}\""))?;
     a.id = new_id.to_string();
     a.updated_at = Utc::now();
+    vault.mark_deleted(id);
     vault.save()?;
     // The cached fingerprint is keyed by (and stamped with) the old id; drop it
     // so it recomputes lazily under the new id on the next `fingerprint`.
@@ -1096,7 +1245,7 @@ fn refresh_fingerprint(vault: &Vault, id: &str) {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn store(
+pub(crate) fn store(
     vault: &mut Vault,
     id: String,
     site: &str,
@@ -1226,7 +1375,7 @@ fn primary_domain(site: &str) -> String {
 }
 
 /// Slug for default ids: leading label of the primary domain ("chatgpt.com" -> "chatgpt").
-fn site_base(site: &str) -> String {
+pub(crate) fn site_base(site: &str) -> String {
     let d = primary_domain(site);
     d.split('.').next().unwrap_or(&d).to_string()
 }

@@ -163,7 +163,23 @@ actor CLIBridge {
         guard let out = try? await runRaw("chrome-use", ["profiles", "--json"]), out.status == 0,
               let env = try? decoder.decode(Envelope<[ChromeProfile]>.self, from: out.stdout)
         else { return [] }
-        return env.data ?? []
+        let emails = Self.profileEmails()
+        return (env.data ?? []).map { p in
+            var p = p
+            p.email = emails[p.directory]
+            return p
+        }
+    }
+
+    /// Profile directory → signed-in Google account, from Chrome's Local State.
+    private static func profileEmails() -> [String: String] {
+        let url = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/Google/Chrome/Local State")
+        guard let data = try? Data(contentsOf: url),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let cache = (root["profile"] as? [String: Any])?["info_cache"] as? [String: [String: Any]]
+        else { return [:] }
+        return cache.compactMapValues { ($0["user_name"] as? String)?.nilIfBlank }
     }
 
     private struct CookieCountOnly: Decodable {
@@ -208,10 +224,6 @@ actor CLIBridge {
 
     /// `clean: true` → `switch` (signs the site's previous account out first —
     /// scoped to that site, never the whole browser); `false` → `use` (layer on top).
-    func open(id: String, target: InjectTarget, clean: Bool) async throws -> ApplyResult {
-        try await json([clean ? "switch" : "use", id, "--target", target.cliValue, "--no-confirm"],
-                       as: ApplyResult.self, inject: true)
-    }
 
     /// Cross-origin QA: rewrite the cookie domain + open a dev origin in one shot.
     func replay(id: String, to devOrigin: String, target: InjectTarget) async throws -> ApplyResult {
@@ -229,6 +241,54 @@ actor CLIBridge {
         }
         return results
     }
+
+    /// Overwrite `to`'s login for `site` with `from`'s (profile directories).
+    func copy(site: String, from: String, to: String, keepExtra: Bool, dryRun: Bool) async throws -> CopyResult {
+        var args = ["copy", "--site", site, "--from", from, "--to", to, "--no-confirm"]
+        if keepExtra { args.append("--keep-extra") }
+        if dryRun { args.append("--dry-run") }
+        return try await json(args, as: CopyResult.self, inject: true)
+    }
+
+    func open(id: String, target: InjectTarget, clean: Bool, openSite: Bool = true) async throws -> ApplyResult {
+        var args = [clean ? "switch" : "use", id, "--target", target.cliValue, "--no-confirm"]
+        if !openSite { args.append("--no-open") }
+        return try await json(args, as: ApplyResult.self, inject: true)
+    }
+
+    // MARK: Export / cloud
+
+    private struct ExportResponse: Decodable { let path: String; let accounts: Int }
+
+    /// Many accounts into one bundle: `ids`, else everything matching `site`, else all.
+    func export(ids: [String], site: String?, out: String, password: String) async throws -> (path: String, count: Int) {
+        var args = ["export"] + ids + ["--out", out, "--password", password]
+        if let site, ids.isEmpty { args += ["--site", site] }
+        let r = try await json(args, as: ExportResponse.self)
+        return (r.path, r.accounts)
+    }
+
+    func cloudStatus() async -> CloudStatus? {
+        try? await json(["cloud", "status"], as: CloudStatus.self)
+    }
+
+    func cloudSecret() async throws -> CloudSecret {
+        try await json(["cloud", "secret"], as: CloudSecret.self)
+    }
+
+    func cloudSetup(endpoint: String, uuid: String?, password: String?, crypto: String, browserCompat: Bool) async throws -> CloudSecret {
+        var args = ["cloud", "setup", "--endpoint", endpoint, "--crypto", crypto]
+        if let uuid { args += ["--uuid", uuid] }
+        if let password { args += ["--password", password] }
+        if !browserCompat { args.append("--no-browser-compat") }
+        return try await json(args, as: CloudSecret.self)
+    }
+
+    func cloudSync(pullOnly: Bool = false) async throws -> MergeResult {
+        try await json(["cloud", pullOnly ? "pull" : "sync"], as: MergeResult.self)
+    }
+
+    func cloudDisconnect() async throws { try await voidJSON(["cloud", "disconnect"]) }
 
     // MARK: Lifecycle
 
@@ -260,5 +320,10 @@ actor CLIBridge {
         if let newID { args += ["--id", newID] }
         let resp = try await json(args, as: RedeemResponse.self)
         return (resp.id, resp.overwroteExisting)
+    }
+
+    /// A multi-account (`export`) bundle: merged, newer copy of each account wins.
+    func redeemMany(bundle: String, password: String) async throws -> MergeResult {
+        try await json(["redeem", bundle, "--password", password], as: MergeResult.self)
     }
 }

@@ -20,6 +20,9 @@ final class Preferences: ObservableObject {
 
     @Published var hotKeyEnabled: Bool { didSet { store.set(hotKeyEnabled, forKey: "hotKey") } }
 
+    /// Minutes between automatic cloud syncs; 0 = off.
+    @Published var syncInterval: Int { didSet { store.set(syncInterval, forKey: "syncInterval") } }
+
     @Published var launchAtLogin: Bool {
         didSet {
             guard launchAtLogin != (SMAppService.mainApp.status == .enabled) else { return }
@@ -37,6 +40,7 @@ final class Preferences: ObservableObject {
         cleanSwitch = store.object(forKey: "cleanSwitch") as? Bool ?? true
         unlockPolicy = UnlockPolicy(rawValue: store.string(forKey: "unlockPolicy") ?? "") ?? .tenMinutes
         hotKeyEnabled = store.object(forKey: "hotKey") as? Bool ?? true
+        syncInterval = store.integer(forKey: "syncInterval")
         launchAtLogin = SMAppService.mainApp.status == .enabled
     }
 

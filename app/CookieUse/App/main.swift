@@ -29,7 +29,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 model: model,
                 onOpenWindow: { [weak self] id in self?.openWindow(select: id) },
                 onCapture: { [weak self] in self?.openWindow(sheet: .capture(prefill: nil)) },
-                onSettings: { [weak self] in self?.openWindow(sheet: .settings) }
+                onSettings: { [weak self] in self?.openWindow(sheet: .settings) },
+                onSheet: { [weak self] sheet in self?.openWindow(sheet: sheet) }
             )
         )
         (popover.contentViewController as? NSHostingController<MenuBarView>)?.sizingOptions = .preferredContentSize
@@ -52,7 +53,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             MainActor.assumeIsolated { BiometricGate.lock() }
         }
 
-        Task { await model.refresh() }
+        Task {
+            await model.refresh()
+            await model.loadCloud()
+        }
     }
 
     /// Double-clicked / dropped-on-Dock `.cusession` bundles and cookie files.
@@ -123,6 +127,9 @@ struct RootWindow: View {
                 case let .redeem(path): RedeemSheet(model: model, bundlePath: path ?? "")
                 case let .share(account): ShareSheet(account: account, model: model)
                 case .settings: SettingsView(prefs: model.prefs)
+                case .copy: CopySheet(model: model)
+                case let .export(site): ExportSheet(model: model, site: site)
+                case .cloud: CloudSyncSheet(model: model, prefs: model.prefs)
                 }
             }
     }

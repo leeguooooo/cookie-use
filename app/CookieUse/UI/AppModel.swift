@@ -17,15 +17,86 @@ final class AppModel: ObservableObject {
     @Published var sheet: Sheet?
     /// The manager window's selected account.
     @Published var selectedID: String?
+    /// Cloud sync settings, nil until loaded.
+    @Published var cloud: CloudStatus?
+    @Published var syncing = false
+    /// A button shown next to the banner (e.g. "Undo" after a copy).
+    @Published var bannerAction: BannerAction?
 
     let prefs = Preferences()
     private let bridge = CLIBridge.shared
     private var bannerTask: Task<Void, Never>?
     private var prefsSink: AnyCancellable?
 
+    private var syncTimer: Timer?
+    private var intervalSink: AnyCancellable?
+
     init() {
         // Views observe the model; re-publish preference changes (pins, toggles) through it.
         prefsSink = prefs.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
+        intervalSink = prefs.$syncInterval.sink { [weak self] minutes in self?.scheduleSync(minutes) }
+    }
+
+    // MARK: Cloud sync
+
+    func loadCloud() async { cloud = await bridge.cloudStatus() }
+
+    private func scheduleSync(_ minutes: Int) {
+        syncTimer?.invalidate()
+        syncTimer = nil
+        guard minutes > 0 else { return }
+        syncTimer = Timer.scheduledTimer(withTimeInterval: TimeInterval(minutes * 60), repeats: true) { [weak self] _ in
+            Task { @MainActor in _ = await self?.syncNow(quiet: true) }
+        }
+    }
+
+    /// Pull, merge and push. Returns an error message, or nil on success.
+    @discardableResult
+    func syncNow(quiet: Bool = false) async -> String? {
+        guard !syncing else { return nil }
+        syncing = true
+        defer { syncing = false }
+        do {
+            let r = try await bridge.cloudSync()
+            await loadCloud()
+            await refresh()
+            // Quiet (timer) syncs only speak up when something arrived.
+            if !quiet || r.summary != "already up to date" { show(.success("Synced: \(r.summary)")) }
+            return nil
+        } catch {
+            show(.error("Sync failed: \(error.localizedDescription)"))
+            return error.localizedDescription
+        }
+    }
+
+    // MARK: Copy between profiles
+
+    func copyLogin(site: String, from: ChromeProfile, to: ChromeProfile, keepExtra: Bool) async -> Bool {
+        guard await BiometricGate.confirm(reason: "Replace \(to.name)’s \(site) login with \(from.name)’s", policy: prefs.unlockPolicy)
+        else { return false }
+        do {
+            let r = try await bridge.copy(site: site, from: from.directory, to: to.directory, keepExtra: keepExtra, dryRun: false)
+            await refresh()
+            let host = site.split(separator: ",").first.map(String.init) ?? site
+            show(.success("\(to.name) is now signed in to \(host) as \(from.name)’s account"))
+            if let backup = r.backupId, let email = to.email {
+                bannerAction = BannerAction(title: "Undo") { [weak self] in
+                    Task { await self?.restore(backup: backup, into: email, name: to.name) }
+                }
+            }
+            return true
+        } catch {
+            show(.error(error.localizedDescription))
+            return false
+        }
+    }
+
+    /// Put a backup taken by `copy` back into the profile it came from.
+    func restore(backup: String, into email: String, name: String) async {
+        do {
+            _ = try await bridge.open(id: backup, target: .browser(email), clean: true, openSite: false)
+            show(.success("Restored \(name)’s previous login"))
+        } catch { show(.error(error.localizedDescription)) }
     }
 
     var chromeConnected: Bool { !connectedBrowsers.isEmpty }
@@ -209,6 +280,15 @@ final class AppModel: ObservableObject {
         catch { show(.error(error.localizedDescription)); return nil }
     }
 
+    func redeemMany(bundle: String, password: String) async -> Result<String, Error> {
+        do {
+            let r = try await bridge.redeemMany(bundle: bundle, password: password)
+            show(.success("Imported: \(r.summary)"))
+            await refresh()
+            return .success(r.summary)
+        } catch { return .failure(error) }
+    }
+
     func redeem(bundle: String, password: String, newID: String?) async -> Result<String, Error> {
         do {
             let r = try await bridge.redeem(bundle: bundle, password: password, newID: newID?.nilIfBlank)
@@ -245,12 +325,19 @@ final class AppModel: ObservableObject {
         var isError: Bool { if case .error = self { return true } else { return false } }
     }
 
+    struct BannerAction: Identifiable {
+        let id = UUID()
+        let title: String
+        let run: () -> Void
+    }
+
     func show(_ banner: Banner) {
         self.banner = banner
+        bannerAction = nil
         bannerTask?.cancel()
         bannerTask = Task {
-            try? await Task.sleep(for: .seconds(banner.isError ? 8 : 3.5))
-            if !Task.isCancelled { self.banner = nil }
+            try? await Task.sleep(for: .seconds(banner.isError ? 8 : (self.bannerAction == nil ? 3.5 : 10)))
+            if !Task.isCancelled { self.banner = nil; self.bannerAction = nil }
         }
     }
 
@@ -268,6 +355,9 @@ final class AppModel: ObservableObject {
         case redeem(String?)
         case share(AccountSummary)
         case settings
+        case copy
+        case export(site: String?)
+        case cloud
 
         var id: String {
             switch self {
@@ -276,6 +366,9 @@ final class AppModel: ObservableObject {
             case .redeem: return "redeem"
             case let .share(a): return "share-\(a.id)"
             case .settings: return "settings"
+            case .copy: return "copy"
+            case .export: return "export"
+            case .cloud: return "cloud"
             }
         }
     }

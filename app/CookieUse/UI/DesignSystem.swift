@@ -158,13 +158,18 @@ struct KeyCap: View {
 /// Inline, auto-dismissing status line (success or error).
 struct BannerView: View {
     let banner: AppModel.Banner
+    var action: AppModel.BannerAction?
 
     var body: some View {
-        Label(banner.text, systemImage: banner.isError ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
+        HStack(spacing: 8) {
+            Label(banner.text, systemImage: banner.isError ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
+                .foregroundStyle(banner.isError ? Color.orange : Color.primary)
+                .symbolRenderingMode(.multicolor)
+                .lineLimit(3)
+            Spacer(minLength: 0)
+            if let action { Button(action.title, action: action.run).controlSize(.small) }
+        }
             .font(.callout)
-            .foregroundStyle(banner.isError ? Color.orange : Color.primary)
-            .symbolRenderingMode(.multicolor)
-            .lineLimit(3)
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
             .frame(maxWidth: .infinity, alignment: .leading)

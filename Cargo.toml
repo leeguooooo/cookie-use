@@ -29,6 +29,10 @@ argon2 = "0.5"
 rpassword = "7"
 # `fingerprint`: SHA-256 of cookie values (hashes only, never the value).
 sha2 = "0.10"
+# `cloud`: CookieCloud-compatible encryption (AES-CBC, MD5-derived key).
+aes = "0.8"
+cbc = { version = "0.1", features = ["alloc"] }
+md-5 = "0.10"
 
 [profile.release]
 opt-level = 3

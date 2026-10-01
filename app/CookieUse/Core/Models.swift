@@ -112,19 +112,69 @@ struct RunResult: Codable, Equatable, Identifiable {
 enum InjectTarget: Equatable {
     case session(String)
     case isolated
+    /// One specific connected Chrome profile, by its signed-in email.
+    case browser(String)
 
     var cliValue: String {
         switch self {
         case let .session(name): return "session:\(name)"
         case .isolated: return "isolated"
+        case let .browser(email): return "browser:\(email)"
         }
     }
 }
 
-/// A local Chrome profile (`chrome-use profiles --json`).
+/// `copy --json`: one profile's site login written over another's.
+struct CopyResult: Codable, Equatable {
+    let site: String
+    let from: String
+    let to: String
+    let copied: Int
+    let removed: Int
+    let backupId: String?
+    let dryRun: Bool
+}
+
+/// `redeem --json` for a multi-account bundle, and `cloud sync|pull --json`.
+struct MergeResult: Codable, Equatable {
+    let added: [String]
+    let updated: [String]
+    let removed: [String]
+    let unchanged: Int
+    let pushed: Bool?
+    let remoteBrowserOnly: Bool?
+
+    var summary: String {
+        var parts: [String] = []
+        if !added.isEmpty { parts.append("\(added.count) new") }
+        if !updated.isEmpty { parts.append("\(updated.count) updated") }
+        if !removed.isEmpty { parts.append("\(removed.count) removed") }
+        return parts.isEmpty ? "already up to date" : parts.joined(separator: ", ")
+    }
+}
+
+/// `cloud status --json`.
+struct CloudStatus: Codable, Equatable {
+    let configured: Bool
+    let endpoint: String?
+    let uuid: String?
+    let cryptoType: String?
+    let browserCompat: Bool?
+    let lastPush: String?
+    let lastPull: String?
+}
+
+struct CloudSecret: Codable, Equatable {
+    let uuid: String
+    let password: String
+}
+
+/// A local Chrome profile (`chrome-use profiles --json`), plus the signed-in
+/// email read from Chrome's Local State (what `--browser` pins to).
 struct ChromeProfile: Codable, Equatable, Hashable, Identifiable {
     let directory: String
     let name: String
+    var email: String?
     var id: String { directory }
 }
 

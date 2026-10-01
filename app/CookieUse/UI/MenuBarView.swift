@@ -8,6 +8,7 @@ struct MenuBarView: View {
     var onOpenWindow: (String?) -> Void
     var onCapture: () -> Void
     var onSettings: () -> Void
+    var onSheet: (AppModel.Sheet) -> Void
 
     @State private var query = ""
     @State private var selectedKey: String?
@@ -34,7 +35,7 @@ struct MenuBarView: View {
                 Divider().padding(.horizontal, 14)
                 content
                 if let banner = model.banner {
-                    BannerView(banner: banner).padding(.horizontal, 10).padding(.bottom, 6)
+                    BannerView(banner: banner, action: model.bannerAction).padding(.horizontal, 10).padding(.bottom, 6)
                 }
                 Divider()
                 footer
@@ -111,6 +112,12 @@ struct MenuBarView: View {
             if model.isLoading { ProgressView().controlSize(.small) }
             Menu {
                 Button("Save a login…", action: onCapture)
+                Button("Copy a login between profiles…") { onSheet(.copy) }
+                if model.cloud?.configured == true {
+                    Button(model.syncing ? "Syncing…" : "Sync now") { Task { await model.syncNow() } }.disabled(model.syncing)
+                } else {
+                    Button("Set up cloud sync…") { onSheet(.cloud) }
+                }
                 Button("Open manager") { onOpenWindow(nil) }
                 Button("Check all sessions") { Task { await model.checkAll() } }
                 Divider()

@@ -4,6 +4,7 @@ use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 /// One stored session for one site.
@@ -67,6 +68,45 @@ impl std::fmt::Display for Status {
 struct VaultData {
     #[serde(default)]
     accounts: Vec<Account>,
+    /// Ids removed (or renamed away) and when — so a sync can propagate the
+    /// delete instead of resurrecting the account from another machine.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    deleted: BTreeMap<String, DateTime<Utc>>,
+    /// CookieCloud-compatible sync settings (endpoint, uuid, password). Kept in
+    /// the encrypted vault, never in a plaintext config file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cloud: Option<CloudConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CloudConfig {
+    pub endpoint: String,
+    pub uuid: String,
+    pub password: String,
+    /// "aes-128-cbc-fixed" (default) or "legacy" (CryptoJS passphrase mode).
+    pub crypto_type: String,
+    /// Also publish the most recently used account per site in CookieCloud's
+    /// own `cookie_data` shape, so the CookieCloud browser extension can
+    /// download it. Off → only cookie-use's sealed vault is uploaded.
+    #[serde(default = "default_true")]
+    pub browser_compat: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_push: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_pull: Option<DateTime<Utc>>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// What a [`Vault::merge`] changed.
+#[derive(Debug, Default, Serialize, PartialEq)]
+pub struct MergeReport {
+    pub added: Vec<String>,
+    pub updated: Vec<String>,
+    pub removed: Vec<String>,
+    pub unchanged: usize,
 }
 
 pub struct Vault {
@@ -120,7 +160,78 @@ impl Vault {
         if self.data.accounts.len() == before {
             return Err(anyhow!("no account with id \"{}\"", id));
         }
+        self.mark_deleted(id);
         Ok(())
+    }
+
+    /// Record that `id` no longer exists here (removed or renamed away).
+    pub fn mark_deleted(&mut self, id: &str) {
+        self.data.deleted.insert(id.to_string(), Utc::now());
+    }
+
+    pub fn deleted(&self) -> &BTreeMap<String, DateTime<Utc>> {
+        &self.data.deleted
+    }
+
+    pub fn cloud(&self) -> Option<&CloudConfig> {
+        self.data.cloud.as_ref()
+    }
+
+    pub fn set_cloud(&mut self, cfg: Option<CloudConfig>) {
+        self.data.cloud = cfg;
+    }
+
+    /// Merge accounts from another machine. Per id the newer `updated_at` wins;
+    /// a delete wins over any copy that is older than it. Never touches an
+    /// account the other side doesn't mention.
+    pub fn merge(
+        &mut self,
+        remote: Vec<Account>,
+        remote_deleted: &BTreeMap<String, DateTime<Utc>>,
+    ) -> MergeReport {
+        let mut report = MergeReport::default();
+        for (id, at) in remote_deleted {
+            let newer = self.data.deleted.get(id).map(|t| at > t).unwrap_or(true);
+            if newer {
+                self.data.deleted.insert(id.clone(), *at);
+            }
+            if let Some(local) = self.find(id) {
+                if local.updated_at < *at {
+                    self.data.accounts.retain(|a| &a.id != id);
+                    report.removed.push(id.clone());
+                }
+            }
+        }
+        for acct in remote {
+            if self
+                .data
+                .deleted
+                .get(&acct.id)
+                .map(|t| acct.updated_at <= *t)
+                .unwrap_or(false)
+            {
+                continue; // deleted here after that copy was made
+            }
+            match self.find_mut(&acct.id) {
+                None => {
+                    report.added.push(acct.id.clone());
+                    self.data.deleted.remove(&acct.id);
+                    self.data.accounts.push(acct);
+                }
+                Some(local) if acct.updated_at > local.updated_at => {
+                    report.updated.push(acct.id.clone());
+                    *local = acct;
+                }
+                Some(local) => {
+                    // Same or older copy: keep ours, but remember the latest use.
+                    if acct.last_used_at > local.last_used_at {
+                        local.last_used_at = acct.last_used_at;
+                    }
+                    report.unchanged += 1;
+                }
+            }
+        }
+        report
     }
 
     /// Delete the on-disk vault file entirely. Used by `wipe`.
@@ -204,5 +315,78 @@ mod landing_tests {
             "pb-super-admin.pwtk.cc"
         );
         assert_eq!(landing_host(" .example.com "), "example.com");
+    }
+}
+
+#[cfg(test)]
+mod merge_tests {
+    use super::*;
+    use chrono::Duration;
+
+    fn acct(id: &str, updated: DateTime<Utc>) -> Account {
+        Account {
+            id: id.into(),
+            site: "x.com".into(),
+            label: None,
+            account_hint: None,
+            note: None,
+            tags: vec![],
+            cookies: vec![],
+            local_storage: None,
+            created_at: updated,
+            updated_at: updated,
+            last_used_at: None,
+            status: Status::Live,
+            proxy: None,
+            fingerprint: None,
+        }
+    }
+
+    fn vault(accounts: Vec<Account>) -> Vault {
+        Vault {
+            data: VaultData {
+                accounts,
+                ..Default::default()
+            },
+            key: [0; 32],
+            path: PathBuf::from("/nonexistent"),
+        }
+    }
+
+    #[test]
+    fn newer_wins_and_new_ids_are_added() {
+        let t = Utc::now();
+        let mut v = vault(vec![acct("a", t), acct("b", t)]);
+        let mut newer_a = acct("a", t + Duration::seconds(5));
+        newer_a.label = Some("remote".into());
+        let older_b = acct("b", t - Duration::seconds(5));
+        let r = v.merge(vec![newer_a, older_b, acct("c", t)], &BTreeMap::new());
+        assert_eq!(r.updated, vec!["a"]);
+        assert_eq!(r.added, vec!["c"]);
+        assert_eq!(r.unchanged, 1);
+        assert_eq!(v.find("a").unwrap().label.as_deref(), Some("remote"));
+    }
+
+    #[test]
+    fn deletes_propagate_but_never_beat_a_newer_copy() {
+        let t = Utc::now();
+        let mut v = vault(vec![
+            acct("old", t),
+            acct("fresh", t + Duration::seconds(60)),
+        ]);
+        let mut gone = BTreeMap::new();
+        gone.insert("old".to_string(), t + Duration::seconds(1));
+        gone.insert("fresh".to_string(), t + Duration::seconds(1));
+        let r = v.merge(vec![], &gone);
+        assert_eq!(r.removed, vec!["old"]);
+        assert!(v.find("fresh").is_some(), "edited after the remote delete");
+
+        // A copy older than our own delete doesn't come back.
+        v.mark_deleted("zombie");
+        let r = v.merge(
+            vec![acct("zombie", t - Duration::seconds(5))],
+            &BTreeMap::new(),
+        );
+        assert!(r.added.is_empty() && v.find("zombie").is_none());
     }
 }

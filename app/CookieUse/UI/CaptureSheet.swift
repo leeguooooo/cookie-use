@@ -3,12 +3,13 @@ import SwiftUI
 /// Save (or refresh) a login from a Chrome profile into the vault.
 ///
 /// Instead of asking for a profile name, it probes every local Chrome profile
-/// for the site and shows which ones are actually signed in.
+/// for the site and lists the ones that have cookies for it.
 struct CaptureSheet: View {
     @ObservedObject var model: AppModel
     let prefill: AppModel.CapturePrefill?
     @Environment(\.dismiss) private var dismiss
 
+    @StateObject private var probe = ProfileProbe()
     @State private var site = ""
     @State private var label = ""
     @State private var accountID = ""
@@ -17,35 +18,17 @@ struct CaptureSheet: View {
     @State private var showAdvanced = false
     @State private var busy = false
     @State private var error: String?
-
-    @State private var profiles: [ChromeProfile] = []
-    @State private var counts: [String: Int] = [:]
-    @State private var probing = false
     @State private var profile: String?
-    @State private var probeTask: Task<Void, Never>?
 
     private var isRefresh: Bool { prefill?.id != nil }
-    /// What gets passed to the CLI: comma-joined hosts, URLs normalized. A
-    /// subdomain also pulls in its base domain — logins usually live on the
-    /// parent (`.cloudflare.com`), and the CLI opens the first host listed.
-    private var normalizedSite: String {
-        var hosts: [String] = []
-        for h in site.split(separator: ",").map({ String($0).normalizedHost }) where !h.isEmpty {
-            for candidate in [h, Favicons.key(h)] where candidate.contains(".") && !hosts.contains(candidate) {
-                hosts.append(candidate)
-            }
-        }
-        return hosts.joined(separator: ",")
-    }
-
+    /// A refresh keeps the account's own site list; a new capture adds base domains.
+    private var normalizedSite: String { isRefresh ? site : site.withBaseDomains }
     private var primaryHost: String { normalizedSite.split(separator: ",").first.map(String.init) ?? "" }
-
-    private var signedIn: [ChromeProfile] { profiles.filter { (counts[$0.directory] ?? 0) > 0 } }
 
     private var suggestedID: String {
         if let id = prefill?.id { return id }
         let base = Favicons.key(primaryHost).split(separator: ".").first.map(String.init) ?? "site"
-        let nameSource = label.nilIfBlank ?? profiles.first { $0.directory == profile }?.name ?? "account"
+        let nameSource = label.nilIfBlank ?? probe.profiles.first { $0.directory == profile }?.name ?? "account"
         let slug = nameSource.lowercased().map { $0.isLetter || $0.isNumber ? $0 : "-" }
             .reduce(into: "") { s, c in if !(c == "-" && s.last == "-") { s.append(c) } }
             .trimmingCharacters(in: CharacterSet(charactersIn: "-"))
@@ -70,31 +53,27 @@ struct CaptureSheet: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            step(1, "Website") {
-                HStack(spacing: 8) {
-                    HStack(spacing: 6) {
-                        if !primaryHost.isEmpty { SiteIcon(host: primaryHost, size: 16) }
-                        TextField("Paste a URL or domain — e.g. dash.cloudflare.com", text: $site)
-                            .textFieldStyle(.plain)
-                            .disabled(isRefresh)
-                    }
-                    .insetField()
-                    if !isRefresh {
-                        Button { Task { await useFrontTab() } } label: { Label("Current tab", systemImage: "safari") }
-                            .help("Use the site open in Chrome’s front window")
-                    }
+            SheetStep(number: 1, title: "Website") {
+                SiteField(site: $site, disabled: isRefresh, error: $error)
+                if !isRefresh, normalizedSite.contains(",") {
+                    Text("Covers \(normalizedSite.replacingOccurrences(of: ",", with: ", "))")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
             }
 
-            if !isRefresh, normalizedSite.contains(",") {
-                Text("Covers \(normalizedSite.replacingOccurrences(of: ",", with: ", "))")
-                    .font(.caption).foregroundStyle(.secondary).padding(.leading, 28).padding(.top, -12)
+            SheetStep(number: 2, title: "Chrome profile with the login") {
+                ProfileList(probe: probe, selection: $profile)
+                if !normalizedSite.isEmpty, !probe.probing {
+                    let n = probe.withCookies.count
+                    Text(n == 0
+                        ? "No profile has cookies for \(primaryHost) yet — sign in to it in Chrome, then come back."
+                        : n > 1 ? "\(n) profiles have cookies for \(primaryHost) — pick the one logged in to the account you want." : "")
+                        .font(.caption).foregroundStyle(n == 0 ? .orange : .secondary)
+                }
             }
 
-            step(2, "Chrome profile with the login") { profilePicker }
-
-            step(3, "Name") {
-                TextField(profiles.first { $0.directory == profile }.map { "e.g. \($0.name)" } ?? "e.g. Work admin", text: $label)
+            SheetStep(number: 3, title: "Name") {
+                TextField(probe.profiles.first { $0.directory == profile }.map { "e.g. \($0.name)" } ?? "e.g. Work admin", text: $label)
                     .textFieldStyle(.roundedBorder)
                     .disabled(isRefresh)
                 Text("Saved as \(accountID.nilIfBlank ?? suggestedID)")
@@ -142,111 +121,20 @@ struct CaptureSheet: View {
                 site = prefill.site
                 label = prefill.label ?? ""
             }
-            profiles = await CLIBridge.shared.chromeProfiles()
-            scheduleProbe(immediately: true)
+            await probe.load()
+            reprobe(immediately: true)
         }
-        .onChange(of: normalizedSite) { scheduleProbe() }
+        .onChange(of: normalizedSite) { reprobe() }
     }
 
-    // MARK: Profile picker
-
-    @ViewBuilder
-    private var profilePicker: some View {
-        if profiles.isEmpty {
-            Text("No Chrome profiles found.").font(.callout).foregroundStyle(.secondary)
-        } else {
-            VStack(alignment: .leading, spacing: 2) {
-                ScrollView {
-                    VStack(spacing: 1) {
-                        ForEach(sortedProfiles) { p in profileRow(p) }
-                    }
-                }
-                .frame(maxHeight: 168)
-                .padding(4)
-                .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: DS.rowRadius))
-                if !normalizedSite.isEmpty, !probing {
-                    Text(signedIn.isEmpty
-                        ? "No profile has a login for \(primaryHost) yet — sign in to it in Chrome, then come back."
-                        : signedIn.count > 1 ? "\(signedIn.count) profiles have cookies for \(primaryHost) — pick the one logged in to the account you want." : "")
-                        .font(.caption).foregroundStyle(signedIn.isEmpty ? .orange : .secondary)
-                }
-            }
-        }
-    }
-
-    /// Profiles with the most cookies for the site first (a real login sets
-    /// many more than analytics does), then the rest in Chrome's order.
-    private var sortedProfiles: [ChromeProfile] {
-        let n = { (p: ChromeProfile) in counts[p.directory] ?? 0 }
-        return profiles.filter { n($0) > 0 }.sorted { n($0) > n($1) } + profiles.filter { n($0) == 0 }
-    }
-
-    private func profileRow(_ p: ChromeProfile) -> some View {
-        let selected = profile == p.directory
-        let n = counts[p.directory]
-        return HStack(spacing: 8) {
-            Image(systemName: selected ? "largecircle.fill.circle" : "circle")
-                .foregroundStyle(selected ? Color.accentColor : .secondary)
-            Text(p.name)
-            Text(p.directory).font(.caption).foregroundStyle(.tertiary)
-            Spacer()
-            if normalizedSite.isEmpty {
-                EmptyView()
-            } else if probing && n == nil {
-                ProgressView().controlSize(.mini)
-            } else if let n, n > 0 {
-                Label("\(n) cookies", systemImage: "checkmark.circle.fill").font(.caption.monospacedDigit()).foregroundStyle(.green)
-                    .help("This profile has \(n) cookies for \(primaryHost) — a logged-in profile usually has the most")
-            } else {
-                Text("no login").font(.caption).foregroundStyle(.tertiary)
-            }
-        }
-        .font(.callout)
-        .padding(.horizontal, 8).padding(.vertical, 5)
-        .contentShape(Rectangle())
-        .background(selected ? Color.accentColor.opacity(0.12) : .clear, in: RoundedRectangle(cornerRadius: 6))
-        .onTapGesture { profile = p.directory }
-    }
-
-    // MARK: Actions
-
-    private func scheduleProbe(immediately: Bool = false) {
-        probeTask?.cancel()
-        counts = [:]
-        let target = normalizedSite
-        guard !target.isEmpty, !profiles.isEmpty else { probing = false; return }
-        probing = true
-        let list = profiles
-        probeTask = Task {
-            if !immediately { try? await Task.sleep(for: .milliseconds(450)) }
-            guard !Task.isCancelled else { return }
-            await withTaskGroup(of: (String, Int).self) { group in
-                for p in list {
-                    group.addTask { (p.directory, await CLIBridge.shared.cookieCount(profile: p.directory, site: target)) }
-                }
-                for await (dir, n) in group {
-                    guard !Task.isCancelled else { return }
-                    counts[dir] = n
-                }
-            }
-            guard !Task.isCancelled else { return }
-            probing = false
+    private func reprobe(immediately: Bool = false) {
+        probe.probe(normalizedSite, immediately: immediately) {
             // Pre-select when the choice is obvious; keep a deliberate pick if still valid.
-            if profile == nil || (counts[profile!] ?? 0) == 0 {
-                profile = signedIn.count == 1 ? signedIn.first?.directory : (signedIn.isEmpty ? nil : profile)
+            let current = probe.profiles.first { $0.directory == profile }
+            if current.map({ probe.count($0) == 0 }) ?? true {
+                profile = probe.withCookies.count == 1 ? probe.withCookies.first?.directory : nil
             }
         }
-    }
-
-    private func useFrontTab() async {
-        guard let url = await ChromeFrontTab.currentURL() else {
-            error = "Couldn’t read Chrome’s front tab. Allow CookieUse to control Chrome in System Settings › Privacy & Security › Automation."
-            return
-        }
-        let host = url.normalizedHost
-        guard host.contains(".") else { error = "The front tab isn’t a website (\(url))."; return }
-        error = nil
-        site = host.withoutWWW
     }
 
     private func submit() {
@@ -261,17 +149,39 @@ struct CaptureSheet: View {
             if saved != nil { dismiss() } else { error = model.banner?.text }
         }
     }
+}
 
-    private func step<Content: View>(_ n: Int, _ title: String, @ViewBuilder content: () -> Content) -> some View {
-        HStack(alignment: .top, spacing: 10) {
-            Text("\(n)")
-                .font(.caption.weight(.bold)).foregroundStyle(.white)
-                .frame(width: 18, height: 18)
-                .background(Color.accentColor, in: Circle())
-            VStack(alignment: .leading, spacing: 6) {
-                Text(title).font(.headline)
-                content()
+/// Website input with a favicon and "take Chrome's front tab".
+struct SiteField: View {
+    @Binding var site: String
+    var disabled = false
+    @Binding var error: String?
+
+    var body: some View {
+        HStack(spacing: 8) {
+            HStack(spacing: 6) {
+                let host = site.split(separator: ",").first.map { String($0).normalizedHost } ?? ""
+                if host.contains(".") { SiteIcon(host: host, size: 16) }
+                TextField("Paste a URL or domain — e.g. dash.cloudflare.com", text: $site)
+                    .textFieldStyle(.plain)
+                    .disabled(disabled)
+            }
+            .insetField()
+            if !disabled {
+                Button { Task { await useFrontTab() } } label: { Label("Current tab", systemImage: "safari") }
+                    .help("Use the site open in Chrome’s front window")
             }
         }
+    }
+
+    private func useFrontTab() async {
+        guard let url = await ChromeFrontTab.currentURL() else {
+            error = "Couldn’t read Chrome’s front tab. Allow CookieUse to control Chrome in System Settings › Privacy & Security › Automation."
+            return
+        }
+        let host = url.normalizedHost
+        guard host.contains(".") else { error = "The front tab isn’t a website (\(url))."; return }
+        error = nil
+        site = host.withoutWWW
     }
 }

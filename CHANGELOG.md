@@ -4,6 +4,15 @@ All notable changes to cookie-use are documented here. Versions follow semver.
 
 ## [Unreleased]
 
+### Changed
+- **CookieUse.dmg is Developer ID signed and notarized by Apple** (app and dmg
+  stapled), so it opens on a double-click with no "unidentified developer"
+  warning. The release workflow signs in a throwaway keychain and notarizes
+  with an App Store Connect API key; `app/build-dmg.sh` does the same locally
+  when `SIGNING_IDENTITY` is set and stays ad-hoc otherwise.
+- `install-app.sh` verifies the dmg's new `.sha256` and refuses an app
+  Gatekeeper rejects, instead of stripping quarantine attributes.
+
 ## [0.6.0] - 2026-10-01
 
 ### Fixed

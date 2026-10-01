@@ -91,6 +91,9 @@ exists print one line to stderr on each run. `COOKIE_USE_NO_UPDATE_CHECK=1`,
 curl -fsSL https://raw.githubusercontent.com/leeguooooo/cookie-use/main/install-app.sh | sh
 ```
 
+Or download `CookieUse.dmg` from the [latest release](https://github.com/leeguooooo/cookie-use/releases/latest).
+It is Developer ID signed and notarized by Apple, so it opens on a double-click.
+
 A menu-bar quick switcher over the same vault the CLI and your agents use:
 
 - **⌥⌘K from anywhere**: type to filter by name, site, tag or note; ↩ signs

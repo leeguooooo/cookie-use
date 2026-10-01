@@ -912,3 +912,41 @@ fn a_sync_that_changes_the_vault_can_be_restored_and_the_restore_wins() {
     let r = json_of(&with_gh(&b, &["cloud", "sync", "--json"]));
     assert_eq!(r["added"], serde_json::json!(["x/alice"]), "{r}");
 }
+
+#[test]
+fn a_rename_on_one_mac_and_an_edit_on_another_end_up_as_one_account() {
+    let (_shared, a, b, gh) = two_synced_macs();
+    let sync = |sb: &Sandbox| {
+        json_of(
+            &sb.cmd()
+                .env("COOKIE_USE_GH_BIN", &gh)
+                .args(["cloud", "sync", "--json"])
+                .output()
+                .unwrap(),
+        )
+    };
+
+    a.cmd()
+        .args(["rename", "x/alice", "x/alice-work"])
+        .output()
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    b.cmd()
+        .args(["edit", "x/alice", "--note", "edited on b"])
+        .output()
+        .unwrap();
+
+    sync(&a);
+    sync(&b);
+    sync(&a);
+    for sb in [&a, &b] {
+        let ids: Vec<String> = list_json(sb, None)["accounts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["id"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(ids, vec!["x/alice-work"], "no duplicate under the old id");
+        assert_eq!(show_json(sb, "x/alice-work")["note"], "edited on b");
+    }
+}

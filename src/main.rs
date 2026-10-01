@@ -1132,7 +1132,7 @@ fn cmd_rename(id: &str, new_id: &str, json: bool) -> Result<()> {
         .ok_or_else(|| anyhow!("no account \"{id}\""))?;
     a.id = new_id.to_string();
     a.touch_meta();
-    vault.mark_deleted(id);
+    vault.mark_renamed(id, new_id);
     vault.save()?;
     // The cached fingerprint is keyed by (and stamped with) the old id; drop it
     // so it recomputes lazily under the new id on the next `fingerprint`.
@@ -1293,24 +1293,28 @@ pub(crate) fn store(
                 .as_ref()
                 .is_some_and(|h| p.account_hint.as_ref() != Some(h))
     });
-    let meta_ts = if meta_changed {
-        now
-    } else {
-        prev.as_ref().map(|p| p.meta_ts()).unwrap_or(now)
+    let meta_ts = match prev.as_ref() {
+        Some(p) if meta_changed => vault::after(p.meta_ts()),
+        Some(p) => p.meta_ts(),
+        None => now,
     };
+    let session_ts = prev
+        .as_ref()
+        .map(|p| vault::after(p.session_ts()))
+        .unwrap_or(now);
     vault.upsert(Account {
         id,
         site: site.to_string(),
         label: label.or_else(|| prev.as_ref().and_then(|a| a.label.clone())),
         account_hint: hint.or_else(|| prev.as_ref().and_then(|a| a.account_hint.clone())),
-        session_updated_at: Some(now),
+        session_updated_at: Some(session_ts),
         meta_updated_at: Some(meta_ts),
         note: prev.as_ref().and_then(|a| a.note.clone()),
         tags: prev.as_ref().map(|a| a.tags.clone()).unwrap_or_default(),
         cookies,
         local_storage,
         created_at,
-        updated_at: now,
+        updated_at: session_ts.max(meta_ts),
         last_used_at: prev.as_ref().and_then(|a| a.last_used_at),
         status,
         proxy: None,

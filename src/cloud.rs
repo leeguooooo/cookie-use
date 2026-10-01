@@ -619,7 +619,7 @@ pub fn cmd_sync(pull_only: bool, force: bool, json_mode: bool) -> Result<()> {
             let mut vault = Vault::open()?;
             if let Some(p) = remote.vault {
                 let mut probe = Vault::scratch_copy(&vault);
-                let r = probe.merge(p.accounts.clone(), &p.deleted);
+                let r = probe.merge_full(p.accounts.clone(), &p.deleted, &p.renamed);
                 let changes = !(r.added.is_empty()
                     && r.updated.is_empty()
                     && r.removed.is_empty()
@@ -627,7 +627,7 @@ pub fn cmd_sync(pull_only: bool, force: bool, json_mode: bool) -> Result<()> {
                 if changes && snapshot.is_none() {
                     snapshot = snapshot_vault()?;
                 }
-                let r = vault.merge(p.accounts, &p.deleted);
+                let r = vault.merge_full(p.accounts, &p.deleted, &p.renamed);
                 total.added.extend(r.added);
                 total.updated.extend(r.updated);
                 total.removed.extend(r.removed);
@@ -641,6 +641,7 @@ pub fn cmd_sync(pull_only: bool, force: bool, json_mode: bool) -> Result<()> {
             Payload {
                 accounts: vault.accounts().to_vec(),
                 deleted: vault.deleted().clone(),
+                renamed: vault.renamed().clone(),
             }
         };
         if pull_only {

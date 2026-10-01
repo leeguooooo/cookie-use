@@ -162,6 +162,9 @@ pub struct Payload {
     /// Deletes to propagate (cloud sync); empty for a plain export.
     #[serde(default)]
     pub deleted: BTreeMap<String, DateTime<Utc>>,
+    /// Renames to propagate (cloud sync).
+    #[serde(default)]
+    pub renamed: BTreeMap<String, crate::vault::Rename>,
 }
 
 pub fn seal_accounts(payload: &Payload, password: &str) -> Result<Vec<u8>> {
@@ -391,7 +394,7 @@ pub fn cmd_redeem(
             bail!("--id only applies to a single-account bundle");
         }
         let payload = unseal_any(&bundle_bytes, &password)?;
-        let report = vault.merge(payload.accounts, &payload.deleted);
+        let report = vault.merge_full(payload.accounts, &payload.deleted, &payload.renamed);
         vault.save()?;
         if json {
             println!("{}", serde_json::to_string(&report)?);

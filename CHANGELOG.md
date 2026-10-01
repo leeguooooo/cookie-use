@@ -4,6 +4,8 @@ All notable changes to cookie-use are documented here. Versions follow semver.
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-10-01
+
 ### Changed
 - **CookieUse.dmg is Developer ID signed and notarized by Apple** (app and dmg
   stapled), so it opens on a double-click with no "unidentified developer"

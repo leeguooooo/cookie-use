@@ -530,14 +530,8 @@ fn pull_remote(cfg: &CloudConfig) -> Result<Remote> {
 }
 
 /// Push the vault. `Ok(false)` = the remote changed since we read it (retry).
-fn push_remote(cfg: &CloudConfig, vault: &Vault, version: Option<&str>) -> Result<bool> {
-    let bundle = seal_accounts(
-        &Payload {
-            accounts: vault.accounts().to_vec(),
-            deleted: vault.deleted().clone(),
-        },
-        &cfg.password,
-    )?;
+fn push_remote(cfg: &CloudConfig, payload: &Payload, version: Option<&str>) -> Result<bool> {
+    let bundle = seal_accounts(payload, &cfg.password)?;
     if cfg.backend == "github" {
         let repo = cfg
             .github_repo
@@ -546,11 +540,12 @@ fn push_remote(cfg: &CloudConfig, vault: &Vault, version: Option<&str>) -> Resul
         return github::write(repo, &bundle, version);
     }
     let (cookie_data, local_storage_data) = if cfg.browser_compat {
-        browser_view(vault.accounts())
+        browser_view(&payload.accounts)
     } else {
         (Map::new(), Map::new())
     };
     let bundle: Value = serde_json::from_slice(&bundle)?;
+    let sent = bundle["ciphertext"].clone();
     upload(
         cfg,
         &json!({
@@ -560,74 +555,193 @@ fn push_remote(cfg: &CloudConfig, vault: &Vault, version: Option<&str>) -> Resul
             "cookie_use": { "version": 1, "bundle": bundle },
         }),
     )?;
-    Ok(true)
+    // A CookieCloud server has no version check, so read back: if another
+    // computer's upload landed on top of ours, merge again and re-push.
+    let landed = fetch(cfg)?.and_then(|r| r.pointer("/cookie_use/bundle/ciphertext").cloned());
+    Ok(landed.as_ref() == Some(&sent))
+}
+
+/// Keep the last [`KEEP_BACKUPS`] vault files from before a sync changed it.
+const KEEP_BACKUPS: usize = 10;
+
+fn backup_dir() -> Result<std::path::PathBuf> {
+    Ok(crate::vault::config_dir()?.join("backups"))
+}
+
+fn snapshot_vault() -> Result<Option<String>> {
+    let src = crate::vault::vault_file()?;
+    if !src.exists() {
+        return Ok(None);
+    }
+    let dir = backup_dir()?;
+    std::fs::create_dir_all(&dir)?;
+    let name = format!("vault-{}.enc", Utc::now().format("%Y%m%d-%H%M%S%.3f"));
+    std::fs::copy(&src, dir.join(&name)).context("saving a vault snapshot")?;
+    let mut all: Vec<_> = std::fs::read_dir(&dir)?
+        .filter_map(|e| e.ok().map(|e| e.file_name().to_string_lossy().to_string()))
+        .filter(|n| n.starts_with("vault-") && n.ends_with(".enc"))
+        .collect();
+    all.sort();
+    while all.len() > KEEP_BACKUPS {
+        let _ = std::fs::remove_file(dir.join(all.remove(0)));
+    }
+    Ok(Some(name))
 }
 
 /// Pull, merge, and (unless `pull_only`) push the merged vault back.
+///
+/// The vault is locked only while it is read or written, never across the
+/// network, so an agent writing to it mid-sync waits a moment instead of
+/// having its change overwritten. Before a pull changes anything, the
+/// current vault is snapshotted (`cloud backups` / `cloud restore`).
 pub fn cmd_sync(pull_only: bool, force: bool, json_mode: bool) -> Result<()> {
-    let mut vault = Vault::open()?;
-    let mut cfg = need(&vault)?;
+    let mut cfg = need(&Vault::open()?)?;
     let mut total = crate::vault::MergeReport::default();
     let mut pushed = false;
     let mut browser_only = false;
+    let mut snapshot: Option<String> = None;
+    let mut accounts = 0;
 
     // A concurrent push from another computer makes ours fail its version
     // check; re-pull, merge again and retry.
     for attempt in 0..3 {
         let remote = pull_remote(&cfg)?;
         browser_only = remote.browser_only;
-        if let Some(p) = remote.vault {
-            let r = vault.merge(p.accounts, &p.deleted);
-            total.added.extend(r.added);
-            total.updated.extend(r.updated);
-            total.removed.extend(r.removed);
-            total.unchanged = r.unchanged;
-        }
-        cfg.last_pull = Some(Utc::now());
-        if pull_only {
-            break;
-        }
-        if browser_only && !force {
+        if browser_only && !pull_only && !force {
             bail!(
                 "this uuid holds data uploaded by the CookieCloud browser extension — pushing would \
                  replace it. Import from it with `cookie-use cloud import <domain> --id <id>`, set up a \
                  separate uuid for cookie-use, or pass --force"
             );
         }
-        if push_remote(&cfg, &vault, remote.version.as_deref())? {
-            cfg.last_push = Some(Utc::now());
+        // Lock, merge into the *current* vault, save, unlock.
+        let payload = {
+            let mut vault = Vault::open()?;
+            if let Some(p) = remote.vault {
+                let mut probe = Vault::scratch_copy(&vault);
+                let r = probe.merge(p.accounts.clone(), &p.deleted);
+                let changes = !(r.added.is_empty()
+                    && r.updated.is_empty()
+                    && r.removed.is_empty()
+                    && r.merged.is_empty());
+                if changes && snapshot.is_none() {
+                    snapshot = snapshot_vault()?;
+                }
+                let r = vault.merge(p.accounts, &p.deleted);
+                total.added.extend(r.added);
+                total.updated.extend(r.updated);
+                total.removed.extend(r.removed);
+                total.merged.extend(r.merged);
+                total.unchanged = r.unchanged;
+            }
+            cfg.last_pull = Some(Utc::now());
+            vault.set_cloud(Some(cfg.clone()));
+            vault.save()?;
+            accounts = vault.accounts().len();
+            Payload {
+                accounts: vault.accounts().to_vec(),
+                deleted: vault.deleted().clone(),
+            }
+        };
+        if pull_only {
+            break;
+        }
+        if push_remote(&cfg, &payload, remote.version.as_deref())? {
             pushed = true;
+            cfg.last_push = Some(Utc::now());
+            let mut vault = Vault::open()?;
+            vault.set_cloud(Some(cfg.clone()));
+            vault.save()?;
             break;
         }
         if attempt == 2 {
             bail!("the remote kept changing while syncing — try again");
         }
     }
-    vault.set_cloud(Some(cfg));
-    vault.save()?;
 
-    let accounts = vault.accounts().len();
     print(
         json_mode,
         json!({
             "added": total.added, "updated": total.updated, "removed": total.removed,
-            "unchanged": total.unchanged, "pushed": pushed, "accounts": accounts,
-            "remote_browser_only": browser_only,
+            "merged": total.merged, "unchanged": total.unchanged, "pushed": pushed,
+            "accounts": accounts, "remote_browser_only": browser_only, "snapshot": snapshot,
         }),
         || {
             println!(
-                "pulled: {} new, {} updated, {} removed, {} unchanged",
+                "pulled: {} new, {} updated, {} removed, {} merged, {} unchanged",
                 total.added.len(),
                 total.updated.len(),
                 total.removed.len(),
+                total.merged.len(),
                 total.unchanged
             );
+            if !total.merged.is_empty() {
+                println!(
+                    "merged (changed on both sides, both kept): {}",
+                    total.merged.join(", ")
+                );
+            }
+            if let Some(s) = &snapshot {
+                println!("previous vault saved as {s} (`cookie-use cloud restore {s}` to undo)");
+            }
             if browser_only {
                 println!("note: the server copy came from the CookieCloud extension — see `cookie-use cloud domains`");
             }
             if pushed {
                 println!("pushed {accounts} account(s)");
             }
+        },
+    )
+}
+
+/// Vault snapshots taken before syncs changed the vault, newest first.
+pub fn cmd_backups(json_mode: bool) -> Result<()> {
+    let dir = backup_dir()?;
+    let mut names: Vec<String> = std::fs::read_dir(&dir)
+        .map(|it| {
+            it.filter_map(|e| e.ok().map(|e| e.file_name().to_string_lossy().to_string()))
+                .filter(|n| n.starts_with("vault-") && n.ends_with(".enc"))
+                .collect()
+        })
+        .unwrap_or_default();
+    names.sort();
+    names.reverse();
+    print(json_mode, json!({ "backups": names }), || {
+        if names.is_empty() {
+            println!("no snapshots yet (one is taken whenever a sync changes the vault)");
+        }
+        for n in &names {
+            println!("{n}");
+        }
+    })
+}
+
+/// Put a snapshot back as the vault (the current vault is snapshotted first).
+/// The next sync makes the restored state win on every computer.
+pub fn cmd_restore(name: &str, json_mode: bool) -> Result<()> {
+    let src = backup_dir()?.join(std::path::Path::new(name).file_name().unwrap_or_default());
+    if !src.exists() {
+        bail!("no snapshot \"{name}\" (see `cookie-use cloud backups`)");
+    }
+    let _lock = Vault::open()?; // hold the lock and prove the current vault opens
+    let saved = snapshot_vault()?;
+    std::fs::copy(&src, crate::vault::vault_file()?).context("restoring the snapshot")?;
+    drop(_lock);
+    // Stamp the restored accounts as the newest copy, so the next sync pushes
+    // this state to the other computers instead of merging the newer remote
+    // copies straight back over it.
+    let mut vault = Vault::open().context("the snapshot doesn't open with this Mac's key")?;
+    vault.mark_all_current();
+    vault.save()?;
+    let n = vault.accounts().len();
+    print(
+        json_mode,
+        json!({ "restored": name, "accounts": n, "previous": saved }),
+        || {
+            println!(
+                "restored {name} ({n} accounts); the vault before that is saved as {}",
+                saved.as_deref().unwrap_or("-")
+            );
         },
     )
 }

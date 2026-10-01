@@ -303,6 +303,15 @@ actor CLIBridge {
 
     func cloudDisconnect() async throws { try await voidJSON(["cloud", "disconnect"]) }
 
+    private struct BackupsResponse: Decodable { let backups: [String] }
+
+    /// Vault snapshots taken before syncs changed the vault, newest first.
+    func cloudBackups() async -> [String] {
+        (try? await json(["cloud", "backups"], as: BackupsResponse.self).backups) ?? []
+    }
+
+    func cloudRestore(_ name: String) async throws { try await voidJSON(["cloud", "restore", name]) }
+
     // MARK: Lifecycle
 
     func rename(id: String, to newID: String) async throws { try await voidJSON(["rename", id, newID]) }

@@ -412,7 +412,8 @@ pub fn cmd_redeem(
     if let Some(nid) = new_id {
         account.id = nid.to_string();
     }
-    account.updated_at = Utc::now();
+    account.touch_session();
+    account.touch_meta();
 
     let final_id = account.id.clone();
     let site = account.site.clone();
@@ -470,6 +471,8 @@ mod tests {
             created_at: now,
             updated_at: now,
             last_used_at: None,
+            session_updated_at: None,
+            meta_updated_at: None,
             status: Status::Live,
             proxy: None,
             fingerprint: None,

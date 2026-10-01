@@ -118,7 +118,8 @@ cookie-use export [--site <d>] --out all.cusession --password <pw>          # ma
 cookie-use redeem all.cusession --password <pw>                            # newer copy of each account wins
 cookie-use cloud setup --github <owner/repo> [--create] [--password P]      # sync via a private GitHub repo (gh login)
 cookie-use cloud setup --endpoint <cookiecloud-url> [--uuid U --password P]  # …or a CookieCloud server
-cookie-use cloud sync                                                       # pull, merge, push
+cookie-use cloud sync                                                       # pull, merge (login & metadata separately), push
+cookie-use cloud backups / cloud restore <name>                             # undo a sync that changed the vault
 cookie-use cloud domains / cloud import <domain> --id <id>                  # use CookieCloud extension uploads
 
 # Manage.

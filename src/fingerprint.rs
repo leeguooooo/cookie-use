@@ -231,6 +231,8 @@ mod tests {
             created_at: now,
             updated_at: now,
             last_used_at: None,
+            session_updated_at: None,
+            meta_updated_at: None,
             status: crate::vault::Status::Live,
             proxy: None,
             fingerprint: None,

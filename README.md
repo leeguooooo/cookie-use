@@ -236,7 +236,27 @@ with the CookieCloud browser extension:
   dates (the extension itself drops them). `cloud sync` refuses to overwrite
   an extension's upload unless you pass `--force`.
 
-Per account the newer copy wins; deletes and renames propagate.
+**When several computers disagree.** Every computer keeps its own full copy
+and merges on each sync, so nothing depends on who syncs first:
+- *Same account changed on two Macs:* the login (cookies, localStorage) and
+  your notes about it (name, login hint, note, tags) merge separately, each
+  side's newer half winning — tagging an account on one Mac never throws away
+  a login you refreshed on another. Last-used time keeps the latest. The sync
+  report lists these as `merged`.
+- *Two Macs syncing at once:* GitHub rejects the stale write and the loser
+  re-pulls, merges and pushes again; a CookieCloud server has no such check,
+  so cookie-use reads its upload back and retries if another landed on top.
+- *Deleted on one Mac, still used on another:* the delete wins unless the
+  account was changed after it; renames count as delete + new.
+- *An agent writing to the vault mid-sync:* the vault is locked only while
+  read or written (never across the network), and the merge goes into the
+  current vault, so the agent's change survives.
+- *Something went wrong anyway:* before a sync changes the vault it is
+  snapshotted (the last 10 are kept). `cookie-use cloud backups` lists them,
+  `cookie-use cloud restore <name>` puts one back, and the next sync makes the
+  restored state win everywhere.
+
+Merging trusts each computer's clock; keep automatic time on.
 
 ### Cross-origin testing (reuse a prod login on `localhost`)
 

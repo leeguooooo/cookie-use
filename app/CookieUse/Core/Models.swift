@@ -140,8 +140,12 @@ struct MergeResult: Codable, Equatable {
     let added: [String]
     let updated: [String]
     let removed: [String]
+    /// Changed on both Macs (e.g. tags here, login there); both edits kept.
+    let merged: [String]?
     let unchanged: Int
     let pushed: Bool?
+    /// The vault snapshot taken before this sync changed anything.
+    let snapshot: String?
     let remoteBrowserOnly: Bool?
 
     var summary: String {
@@ -149,6 +153,7 @@ struct MergeResult: Codable, Equatable {
         if !added.isEmpty { parts.append("\(added.count) new") }
         if !updated.isEmpty { parts.append("\(updated.count) updated") }
         if !removed.isEmpty { parts.append("\(removed.count) removed") }
+        if let merged, !merged.isEmpty { parts.append("\(merged.count) merged from both Macs") }
         return parts.isEmpty ? "already up to date" : parts.joined(separator: ", ")
     }
 }

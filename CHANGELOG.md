@@ -4,6 +4,22 @@ All notable changes to cookie-use are documented here. Versions follow semver.
 
 ## [Unreleased]
 
+### Changed
+- **Sync conflicts between computers are merged, not overwritten.** Each
+  account's login (cookies, localStorage) and metadata (label, hint, note,
+  tags) carry their own timestamps and merge separately, so editing tags on
+  one Mac no longer discards a login refreshed on another (reported as
+  `merged`). `last_used_at` keeps the latest.
+- The vault is locked (`vault.lock`) while read or written; `cloud sync`
+  never holds it across the network and merges into the current vault, so a
+  CLI/agent write during a sync is kept.
+- CookieCloud pushes are read back and retried if another upload landed on top.
+
+### Added
+- Snapshots before a sync changes the vault (last 10) with `cloud backups` and
+  `cloud restore <name>`; a restore wins on the next sync. App: Restore… menu
+  in Sync between Macs.
+
 ## [0.8.0] - 2026-10-02
 
 ### Added

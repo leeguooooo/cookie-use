@@ -89,6 +89,10 @@ enum CloudCmd {
     },
     /// Forget the sync settings (the server copy stays).
     Disconnect,
+    /// List vault snapshots taken before a sync changed the vault.
+    Backups,
+    /// Put a snapshot back as the vault (the current one is snapshotted first).
+    Restore { name: String },
 }
 
 #[derive(Subcommand)]
@@ -507,6 +511,8 @@ fn run(cli: Cli) -> Result<()> {
             CloudCmd::Domains => cloud::cmd_domains(json),
             CloudCmd::Import { site, id, label } => cloud::cmd_import(&site, &id, label, json),
             CloudCmd::Disconnect => cloud::cmd_disconnect(json),
+            CloudCmd::Backups => cloud::cmd_backups(json),
+            CloudCmd::Restore { name } => cloud::cmd_restore(&name, json),
         },
         Cmd::Export {
             ids,
@@ -1125,7 +1131,7 @@ fn cmd_rename(id: &str, new_id: &str, json: bool) -> Result<()> {
         .find_mut(id)
         .ok_or_else(|| anyhow!("no account \"{id}\""))?;
     a.id = new_id.to_string();
-    a.updated_at = Utc::now();
+    a.touch_meta();
     vault.mark_deleted(id);
     vault.save()?;
     // The cached fingerprint is keyed by (and stamped with) the old id; drop it
@@ -1176,7 +1182,7 @@ fn cmd_edit(
     if let Some(v) = tags {
         a.tags = parse_tags(&v);
     }
-    a.updated_at = Utc::now();
+    a.touch_meta();
     let out = json!({
         "id": a.id, "label": a.label, "hint": a.account_hint,
         "note": a.note, "tags": a.tags,
@@ -1280,11 +1286,25 @@ pub(crate) fn store(
     let prev = vault.find(&id).cloned();
     let created_at = prev.as_ref().map(|a| a.created_at).unwrap_or(now);
     let status = liveness(&cookies);
+    // A re-capture changes the session; the metadata only if new values came in.
+    let meta_changed = prev.as_ref().is_none_or(|p| {
+        label.as_ref().is_some_and(|l| p.label.as_ref() != Some(l))
+            || hint
+                .as_ref()
+                .is_some_and(|h| p.account_hint.as_ref() != Some(h))
+    });
+    let meta_ts = if meta_changed {
+        now
+    } else {
+        prev.as_ref().map(|p| p.meta_ts()).unwrap_or(now)
+    };
     vault.upsert(Account {
         id,
         site: site.to_string(),
         label: label.or_else(|| prev.as_ref().and_then(|a| a.label.clone())),
         account_hint: hint.or_else(|| prev.as_ref().and_then(|a| a.account_hint.clone())),
+        session_updated_at: Some(now),
+        meta_updated_at: Some(meta_ts),
         note: prev.as_ref().and_then(|a| a.note.clone()),
         tags: prev.as_ref().map(|a| a.tags.clone()).unwrap_or_default(),
         cookies,

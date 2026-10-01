@@ -682,3 +682,90 @@ fn copy_refuses_same_or_ambiguous_profiles() {
         stderr_of(&out)
     );
 }
+
+/// A fake `gh` that keeps the synced file in a directory and speaks just the
+/// calls the github backend makes. `FAKE_GH_CONFLICT_ONCE` makes the first
+/// PUT fail with GitHub's stale-sha 409, to exercise the retry.
+fn fake_gh(sb: &Sandbox) -> std::path::PathBuf {
+    let dir = sb.path("fakegh");
+    std::fs::create_dir_all(&dir).unwrap();
+    let script = dir.join("gh");
+    std::fs::write(
+        &script,
+        r#"#!/bin/bash
+store="$(dirname "$0")/../remote"; mkdir -p "$store"; f="$store/file"; shafile="$store/sha"
+if [ "$1" = repo ] && [ "$2" = create ]; then touch "$store/created"; exit 0; fi
+[ "$1" = api ] || exit 2; shift
+case "$*" in
+  *"--jq .private"*) [ -e "$store/created" ] && echo true || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; } ;;
+  *"--jq .sha"*) [ -e "$f" ] && cat "$shafile" || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; } ;;
+  *"application/vnd.github.raw"*) cat "$f" ;;
+  *"-X PUT"*)
+    body="$(cat)"
+    if [ -n "$FAKE_GH_CONFLICT_ONCE" ] && [ ! -e "$store/conflicted" ]; then
+      touch "$store/conflicted"; echo "gh: file does not match abc (HTTP 409)" >&2; exit 1; fi
+    sent="$(printf '%s' "$body" | python3 -c 'import sys,json;print(json.load(sys.stdin).get("sha",""))')"
+    if [ -e "$shafile" ] && [ "$sent" != "$(cat "$shafile")" ]; then echo "gh: file does not match (HTTP 409)" >&2; exit 1; fi
+    printf '%s' "$body" | python3 -c 'import sys,json,base64;sys.stdout.buffer.write(base64.b64decode(json.load(sys.stdin)["content"]))' > "$f"
+    shasum "$f" | cut -c1-40 > "$shafile" ;;
+  *) echo "unexpected: $*" >&2; exit 3 ;;
+esac
+"#,
+    )
+    .unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    script
+}
+
+#[test]
+fn github_backend_syncs_through_a_private_repo_and_retries_conflicts() {
+    let shared = Sandbox::new();
+    let gh = fake_gh(&shared);
+    let (a, b) = (Sandbox::new(), Sandbox::new());
+    let with_gh = |sb: &Sandbox, args: &[&str]| {
+        sb.cmd()
+            .env("COOKIE_USE_GH_BIN", &gh)
+            .args(args)
+            .output()
+            .unwrap()
+    };
+
+    a.seed("x/alice", "x.com");
+    let out = with_gh(&a, &["cloud", "setup", "--github", "me/sync"]);
+    assert!(stderr_of(&out).contains("--create"), "{}", stderr_of(&out));
+    let cfg = json_of(&with_gh(
+        &a,
+        &[
+            "cloud", "setup", "--github", "me/sync", "--create", "--json",
+        ],
+    ));
+    assert_eq!(cfg["backend"], "github");
+    let pw = cfg["password"].as_str().unwrap().to_string();
+    assert_eq!(
+        json_of(&with_gh(&a, &["cloud", "sync", "--json"]))["pushed"],
+        true
+    );
+
+    b.seed("y/bob", "y.com");
+    with_gh(
+        &b,
+        &["cloud", "setup", "--github", "me/sync", "--password", &pw],
+    );
+    // B's first push hits a stale-sha conflict; it must re-pull, merge and retry.
+    let out = b
+        .cmd()
+        .env("COOKIE_USE_GH_BIN", &gh)
+        .env("FAKE_GH_CONFLICT_ONCE", "1")
+        .args(["cloud", "sync", "--json"])
+        .output()
+        .unwrap();
+    let r = json_of(&out);
+    assert_eq!(r["pushed"], true);
+    assert_eq!(r["accounts"], 2);
+
+    let r = json_of(&with_gh(&a, &["cloud", "pull", "--json"]));
+    assert_eq!(r["added"], serde_json::json!(["y/bob"]));
+    // CookieCloud-only commands say so on the github backend.
+    assert!(stderr_of(&with_gh(&a, &["cloud", "domains"])).contains("CookieCloud"));
+}

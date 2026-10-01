@@ -40,12 +40,19 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum CloudCmd {
-    /// Save the server and credentials (uuid/password are generated if omitted;
-    /// reuse the same three on every computer, or in the CookieCloud extension).
+    /// Choose where to sync: a private GitHub repo (`--github`, no server; uses
+    /// your `gh` login) or a CookieCloud server (`--endpoint`). The password is
+    /// generated if omitted — reuse it on every computer.
     Setup {
+        /// Private GitHub repo, owner/repo (e.g. you/cookie-use-sync).
+        #[arg(long)]
+        github: Option<String>,
+        /// Create the --github repo (private) if it doesn't exist.
+        #[arg(long)]
+        create: bool,
         /// CookieCloud server URL, e.g. https://cookiecloud.example.com
         #[arg(long)]
-        endpoint: String,
+        endpoint: Option<String>,
         #[arg(long)]
         uuid: Option<String>,
         #[arg(long)]
@@ -224,8 +231,8 @@ enum Cmd {
         #[arg(long)]
         no_confirm: bool,
     },
-    /// Sync the vault between computers through a CookieCloud server
-    /// (self-hosted or public; wire-compatible with CookieCloud).
+    /// Sync the vault between computers: through a private GitHub repo (no
+    /// server) or a CookieCloud server (self-hosted or public).
     Cloud {
         #[command(subcommand)]
         action: CloudCmd,
@@ -474,12 +481,25 @@ fn run(cli: Cli) -> Result<()> {
         }),
         Cmd::Cloud { action } => match action {
             CloudCmd::Setup {
+                github,
+                create,
                 endpoint,
                 uuid,
                 password,
                 crypto,
                 no_browser_compat,
-            } => cloud::cmd_setup(&endpoint, uuid, password, &crypto, !no_browser_compat, json),
+            } => cloud::cmd_setup(
+                cloud::SetupArgs {
+                    endpoint,
+                    github,
+                    create,
+                    uuid,
+                    password,
+                    crypto_type: crypto,
+                    browser_compat: !no_browser_compat,
+                },
+                json,
+            ),
             CloudCmd::Status => cloud::cmd_status(json),
             CloudCmd::Secret => cloud::cmd_show_secret(json),
             CloudCmd::Sync { force } => cloud::cmd_sync(false, force, json),

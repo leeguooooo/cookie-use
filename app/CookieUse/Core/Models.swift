@@ -156,6 +156,8 @@ struct MergeResult: Codable, Equatable {
 /// `cloud status --json`.
 struct CloudStatus: Codable, Equatable {
     let configured: Bool
+    let backend: String?
+    let githubRepo: String?
     let endpoint: String?
     let uuid: String?
     let cryptoType: String?
@@ -167,6 +169,14 @@ struct CloudStatus: Codable, Equatable {
 struct CloudSecret: Codable, Equatable {
     let uuid: String
     let password: String
+    let githubRepo: String?
+}
+
+extension CloudStatus {
+    /// "GitHub you/cookie-use-sync" or the CookieCloud server URL.
+    var whereText: String {
+        backend == "github" ? "GitHub \(githubRepo ?? "") (private repo)" : (endpoint ?? "")
+    }
 }
 
 /// A local Chrome profile (`chrome-use profiles --json`), plus the signed-in

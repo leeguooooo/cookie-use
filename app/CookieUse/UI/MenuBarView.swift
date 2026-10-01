@@ -116,7 +116,7 @@ struct MenuBarView: View {
                 if model.cloud?.configured == true {
                     Button(model.syncing ? "Syncing…" : "Sync now") { Task { await model.syncNow() } }.disabled(model.syncing)
                 } else {
-                    Button("Set up cloud sync…") { onSheet(.cloud) }
+                    Button("Sync between Macs…") { onSheet(.cloud) }
                 }
                 Button("Open manager") { onOpenWindow(nil) }
                 Button("Check all sessions") { Task { await model.checkAll() } }

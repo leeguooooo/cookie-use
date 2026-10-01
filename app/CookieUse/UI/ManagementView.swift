@@ -39,9 +39,9 @@ struct ManagementView: View {
                 Button { model.sheet = .copy } label: { Label("Copy between profiles", systemImage: "arrow.right.doc.on.clipboard") }
                     .help("Copy a site’s login from one Chrome profile into another")
                 Button { model.sheet = .cloud } label: {
-                    Label("Cloud sync", systemImage: model.syncing ? "arrow.triangle.2.circlepath" : "arrow.triangle.2.circlepath.icloud")
+                    Label("Sync between Macs", systemImage: model.syncing ? "arrow.triangle.2.circlepath" : "arrow.triangle.2.circlepath.icloud")
                 }
-                .help(model.cloud?.configured == true ? "Cloud sync is on — click to sync or change it" : "Sync logins between your Macs")
+                .help(model.cloud?.configured == true ? "Sync is on — click to sync now or change it" : "Keep the same logins on all your Macs (GitHub private repo or CookieCloud)")
                 Menu {
                     Button("Export logins…") { model.sheet = .export(site: nil) }
                     Button("Import a .cusession file…") { model.sheet = .redeem(nil) }

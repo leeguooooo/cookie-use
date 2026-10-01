@@ -4,6 +4,15 @@ All notable changes to cookie-use are documented here. Versions follow semver.
 
 ## [Unreleased]
 
+### Added
+- **Sync through a private GitHub repo — no server**:
+  `cloud setup --github <owner/repo> [--create]`. The vault is one sealed
+  `.cusession` file (argon2id + AES-GCM; `redeem`-able by hand) committed via
+  the user's `gh` login. Public repos are refused; concurrent pushes are
+  caught by GitHub's sha check and retried after a re-merge.
+- App: "Sync between Macs" offers GitHub (repo prefilled from the `gh` login,
+  created private on request) or a CookieCloud server.
+
 ## [0.7.0] - 2026-10-02
 
 ### Added

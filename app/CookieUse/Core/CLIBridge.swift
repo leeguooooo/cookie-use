@@ -276,6 +276,19 @@ actor CLIBridge {
         try await json(["cloud", "secret"], as: CloudSecret.self)
     }
 
+    /// The signed-in GitHub account (`gh`), to suggest a repo name. nil = gh missing / logged out.
+    func githubLogin() async -> String? {
+        guard let out = try? await runRaw("gh", ["api", "user", "--jq", ".login"]), out.status == 0 else { return nil }
+        return String(data: out.stdout, encoding: .utf8)?.nilIfBlank
+    }
+
+    func cloudSetupGitHub(repo: String, create: Bool, password: String?) async throws -> CloudSecret {
+        var args = ["cloud", "setup", "--github", repo]
+        if create { args.append("--create") }
+        if let password { args += ["--password", password] }
+        return try await json(args, as: CloudSecret.self)
+    }
+
     func cloudSetup(endpoint: String, uuid: String?, password: String?, crypto: String, browserCompat: Bool) async throws -> CloudSecret {
         var args = ["cloud", "setup", "--endpoint", endpoint, "--crypto", crypto]
         if let uuid { args += ["--uuid", uuid] }

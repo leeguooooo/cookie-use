@@ -4,6 +4,8 @@ All notable changes to cookie-use are documented here. Versions follow semver.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-01
+
 ### Fixed
 - **`switch` no longer signs you out of every website.** It called chrome-use
   `cookies clear` (CDP `Network.clearBrowserCookies`), which wipes the whole

@@ -247,7 +247,9 @@ and merges on each sync, so nothing depends on who syncs first:
   re-pulls, merges and pushes again; a CookieCloud server has no such check,
   so cookie-use reads its upload back and retries if another landed on top.
 - *Deleted on one Mac, still used on another:* the delete wins unless the
-  account was changed after it; renames count as delete + new.
+  account was changed after it.
+- *Renamed on one Mac, edited under the old id on another:* the edit lands on
+  the renamed account — no duplicate comes back under the old id.
 - *An agent writing to the vault mid-sync:* the vault is locked only while
   read or written (never across the network), and the merge goes into the
   current vault, so the agent's change survives.
@@ -256,7 +258,9 @@ and merges on each sync, so nothing depends on who syncs first:
   `cookie-use cloud restore <name>` puts one back, and the next sync makes the
   restored state win everywhere.
 
-Merging trusts each computer's clock; keep automatic time on.
+Merging compares timestamps, and an edit is always stamped later than the
+version it was made on, so a Mac whose clock runs a little behind still wins
+with the edits it makes after seeing another's. Keep automatic time on anyway.
 
 ### Cross-origin testing (reuse a prod login on `localhost`)
 

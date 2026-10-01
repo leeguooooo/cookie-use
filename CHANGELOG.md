@@ -4,6 +4,13 @@ All notable changes to cookie-use are documented here. Versions follow semver.
 
 ## [Unreleased]
 
+### Changed
+- Sync follows renames: an edit to the old id made on another computer lands
+  on the renamed account instead of resurrecting the old id as a duplicate.
+  Renames are recorded in the vault and travel with sync and `export`.
+- Edits are stamped strictly after the version they change, so a computer
+  whose clock lags still wins with edits made after seeing another's.
+
 ## [0.9.0] - 2026-10-02
 
 ### Changed

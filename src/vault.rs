@@ -63,17 +63,31 @@ impl Account {
 
     /// Mark the session as changed now (keeps `updated_at` = latest change).
     pub fn touch_session(&mut self) {
-        let now = Utc::now();
-        self.session_updated_at = Some(now);
-        self.updated_at = now;
+        let ts = after(self.session_ts());
+        self.session_updated_at = Some(ts);
+        self.updated_at = self.updated_at.max(ts);
     }
 
     /// Mark the metadata as changed now.
     pub fn touch_meta(&mut self) {
-        let now = Utc::now();
-        self.meta_updated_at = Some(now);
-        self.updated_at = now;
+        let ts = after(self.meta_ts());
+        self.meta_updated_at = Some(ts);
+        self.updated_at = self.updated_at.max(ts);
     }
+}
+
+/// "Now", but never at or before `prev`: an edit made after seeing a change
+/// always counts as newer than it, even when this Mac's clock runs behind the
+/// one that made `prev`.
+pub fn after(prev: DateTime<Utc>) -> DateTime<Utc> {
+    Utc::now().max(prev + chrono::Duration::milliseconds(1))
+}
+
+/// An id renamed away: where it went and when.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Rename {
+    pub to: String,
+    pub at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -104,6 +118,10 @@ struct VaultData {
     /// delete instead of resurrecting the account from another machine.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     deleted: BTreeMap<String, DateTime<Utc>>,
+    /// Old id → new id for renames, so a sync applies another computer's
+    /// edits of the old id to the renamed account instead of resurrecting it.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    renamed: BTreeMap<String, Rename>,
     /// CookieCloud-compatible sync settings (endpoint, uuid, password). Kept in
     /// the encrypted vault, never in a plaintext config file.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -238,6 +256,7 @@ impl Vault {
             data: VaultData {
                 accounts: other.data.accounts.clone(),
                 deleted: other.data.deleted.clone(),
+                renamed: other.data.renamed.clone(),
                 cloud: None,
             },
             key: other.key,
@@ -286,6 +305,23 @@ impl Vault {
         &self.data.deleted
     }
 
+    pub fn renamed(&self) -> &BTreeMap<String, Rename> {
+        &self.data.renamed
+    }
+
+    /// Record a rename (the old id also counts as deleted).
+    pub fn mark_renamed(&mut self, old: &str, new: &str) {
+        let at = Utc::now();
+        self.data.deleted.insert(old.to_string(), at);
+        self.data.renamed.insert(
+            old.to_string(),
+            Rename {
+                to: new.to_string(),
+                at,
+            },
+        );
+    }
+
     pub fn cloud(&self) -> Option<&CloudConfig> {
         self.data.cloud.as_ref()
     }
@@ -299,11 +335,75 @@ impl Vault {
     /// separately — each side's newer half wins — and `last_used_at` keeps the
     /// latest. A delete wins over any copy older than it. Accounts the other
     /// side doesn't mention are never touched.
+    #[cfg(test)]
     pub fn merge(
         &mut self,
         remote: Vec<Account>,
         remote_deleted: &BTreeMap<String, DateTime<Utc>>,
     ) -> MergeReport {
+        self.merge_full(remote, remote_deleted, &BTreeMap::new())
+    }
+
+    /// [`Vault::merge`] plus renames: an edit to an id that was renamed after
+    /// the edit's base lands on the new id (on either side) instead of
+    /// bringing the old id back as a duplicate.
+    pub fn merge_full(
+        &mut self,
+        remote: Vec<Account>,
+        remote_deleted: &BTreeMap<String, DateTime<Utc>>,
+        remote_renamed: &BTreeMap<String, Rename>,
+    ) -> MergeReport {
+        for (old, r) in remote_renamed {
+            let newer = self
+                .data
+                .renamed
+                .get(old)
+                .map(|l| r.at > l.at)
+                .unwrap_or(true);
+            if newer {
+                self.data.renamed.insert(old.clone(), r.clone());
+            }
+        }
+        // Local copies of renamed ids that were edited after the rename move
+        // to the new id (merged there below) rather than surviving as a twin.
+        let mut moved: Vec<Account> = Vec::new();
+        let stale: Vec<String> = self
+            .data
+            .accounts
+            .iter()
+            .filter(|a| {
+                self.data
+                    .renamed
+                    .get(&a.id)
+                    .is_some_and(|r| a.updated_at > r.at)
+            })
+            .map(|a| a.id.clone())
+            .collect();
+        for id in stale {
+            if let Some(pos) = self.data.accounts.iter().position(|a| a.id == id) {
+                moved.push(self.data.accounts.remove(pos));
+            }
+        }
+        let remote: Vec<Account> = remote
+            .into_iter()
+            .chain(moved)
+            .map(|mut a| {
+                if let Some(r) = self.data.renamed.get(&a.id) {
+                    if a.updated_at > r.at {
+                        // Follow the chain (a → b → c), each hop made before this edit.
+                        let mut to = r.to.clone();
+                        for _ in 0..8 {
+                            match self.data.renamed.get(&to) {
+                                Some(n) if a.updated_at > n.at => to = n.to.clone(),
+                                _ => break,
+                            }
+                        }
+                        a.id = to;
+                    }
+                }
+                a
+            })
+            .collect();
         let mut report = MergeReport::default();
         for (id, at) in remote_deleted {
             let newer = self.data.deleted.get(id).map(|t| at > t).unwrap_or(true);
@@ -509,6 +609,17 @@ mod merge_tests {
         assert_eq!(r.added, vec!["c"]);
         assert_eq!(r.unchanged, 1);
         assert_eq!(v.find("a").unwrap().label.as_deref(), Some("remote"));
+    }
+
+    #[test]
+    fn an_edit_after_a_future_stamp_still_counts_as_newer() {
+        // Another Mac with a fast clock stamped this account 10 minutes ahead.
+        let ahead = Utc::now() + Duration::minutes(10);
+        let mut a = acct("a", ahead);
+        a.meta_updated_at = Some(ahead);
+        a.touch_meta();
+        assert!(a.meta_ts() > ahead);
+        assert!(a.updated_at > ahead);
     }
 
     #[test]

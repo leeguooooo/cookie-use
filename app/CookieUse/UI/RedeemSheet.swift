@@ -1,112 +1,102 @@
-import SwiftUI
 import AppKit
+import SwiftUI
 import UniformTypeIdentifiers
 
-/// Import a shared `.cusession` bundle into the local vault. The bundle's id/site
-/// are cleartext, but cookies/localStorage are AES-GCM-sealed behind the password.
+/// Bring a teammate's `.cusession` bundle into the vault. The bundle's id and
+/// site are cleartext, so we preview who it is (and warn about an id collision)
+/// before the password is needed.
 struct RedeemSheet: View {
     @ObservedObject var model: AppModel
     @Environment(\.dismiss) private var dismiss
 
-    @State private var bundlePath = ""
+    @State var bundlePath: String
     @State private var password = ""
     @State private var newID = ""
     @State private var busy = false
+    @State private var error: String?
 
-    private var canSubmit: Bool {
-        !bundlePath.trimmingCharacters(in: .whitespaces).isEmpty
-            && !password.isEmpty
-            && !busy
+    private struct Preview: Decodable { let id: String; let site: String }
+
+    private var preview: Preview? {
+        guard !bundlePath.isEmpty, let data = FileManager.default.contents(atPath: bundlePath) else { return nil }
+        return try? JSONDecoder().decode(Preview.self, from: data)
     }
+
+    private var collides: Bool {
+        guard let p = preview else { return false }
+        return newID.nilIfBlank == nil && model.accounts.contains { $0.id == p.id }
+    }
+
+    private var canSubmit: Bool { preview != nil && !password.isEmpty && !busy }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Label("Redeem session", systemImage: "gift")
-                .font(.title2.weight(.semibold))
+            Label("Redeem shared login", systemImage: "gift").font(.title2.weight(.semibold))
 
-            Text("Open a shared .cusession bundle and unlock it with the sender's password.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Bundle").font(.callout).foregroundStyle(.secondary)
-                HStack(spacing: 8) {
-                    Button {
-                        chooseBundle()
-                    } label: {
-                        Label("Choose .cusession…", systemImage: "doc.badge.plus")
+            if let p = preview {
+                HStack(spacing: 12) {
+                    SiteIcon(host: p.site.split(separator: ",").first.map(String.init) ?? p.site, size: 36)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(p.id).font(.headline.monospaced())
+                        Text(p.site).font(.callout).foregroundStyle(.secondary)
                     }
-                    .buttonStyle(.bordered).controlSize(.large)
-
-                    if !bundlePath.isEmpty {
-                        Text(displayName(bundlePath))
-                            .font(.callout)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer(minLength: 0)
+                    Spacer()
+                    Button("Change…") { chooseBundle() }
+                }
+                .infoCard()
+            } else {
+                Button { chooseBundle() } label: { Label("Choose .cusession…", systemImage: "doc.badge.plus") }
+                    .controlSize(.large)
+                if !bundlePath.isEmpty {
+                    Text("That file isn’t a cookie-use bundle.").font(.callout).foregroundStyle(.orange)
                 }
             }
 
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Password").font(.callout).foregroundStyle(.secondary)
-                SecureField("Password", text: $password)
-                    .textFieldStyle(.roundedBorder)
+            SecureField("Password from the sender", text: $password).textFieldStyle(.roundedBorder)
+
+            VStack(alignment: .leading, spacing: 4) {
+                TextField("Save under a different id (optional)", text: $newID).textFieldStyle(.roundedBorder)
+                if collides {
+                    Label("You already have “\(preview!.id)”. Redeeming replaces it — set a different id to keep both.",
+                          systemImage: "exclamationmark.triangle")
+                        .font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                }
             }
 
-            VStack(alignment: .leading, spacing: 6) {
-                Text("New id (optional)").font(.callout).foregroundStyle(.secondary)
-                TextField("Rename on import to avoid collisions", text: $newID)
-                    .textFieldStyle(.roundedBorder)
-            }
-
-            if let error = model.lastError {
-                Text(error).font(.callout).foregroundStyle(.orange)
+            if let error {
+                Label(error, systemImage: "exclamationmark.triangle.fill").font(.callout).foregroundStyle(.orange)
             }
 
             HStack(spacing: 10) {
-                if busy { ProgressView().controlSize(.small) }
+                if busy { ProgressView().controlSize(.small); Text("Unlocking…").font(.callout).foregroundStyle(.secondary) }
                 Spacer()
-                Button("Cancel") { dismiss() }
-                    .buttonStyle(.bordered).controlSize(.large)
-                Button("Redeem") { submit() }
+                Button("Cancel") { dismiss() }.controlSize(.large).disabled(busy)
+                Button(collides ? "Replace" : "Redeem") { submit() }
                     .buttonStyle(.borderedProminent).controlSize(.large)
-                    .keyboardShortcut(.defaultAction)
-                    .disabled(!canSubmit)
+                    .keyboardShortcut(.defaultAction).disabled(!canSubmit)
             }
         }
         .padding(24)
-        .frame(width: 440)
+        .frame(width: 460)
     }
 
     private func chooseBundle() {
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = false
-        panel.canChooseDirectories = false
-        panel.canChooseFiles = true
-        if let type = UTType(filenameExtension: "cusession") {
-            panel.allowedContentTypes = [type]
-        }
-        panel.prompt = "Choose"
-        if panel.runModal() == .OK, let url = panel.url {
-            bundlePath = url.path
-        }
-    }
-
-    private func displayName(_ path: String) -> String {
-        URL(fileURLWithPath: path).lastPathComponent
+        if let type = UTType(filenameExtension: "cusession") { panel.allowedContentTypes = [type] }
+        if panel.runModal() == .OK, let url = panel.url { bundlePath = url.path }
     }
 
     private func submit() {
-        let bundle = bundlePath.trimmingCharacters(in: .whitespaces)
-        let trimmedID = newID.trimmingCharacters(in: .whitespaces)
-        let id = trimmedID.isEmpty ? nil : trimmedID
         busy = true
+        error = nil
         Task {
-            let ok = await model.redeem(bundle: bundle, password: password, newID: id)
+            let result = await model.redeem(bundle: bundlePath, password: password, newID: newID)
             busy = false
-            if ok { dismiss() }
+            switch result {
+            case .success: dismiss()
+            case let .failure(e): error = e.localizedDescription
+            }
         }
     }
 }

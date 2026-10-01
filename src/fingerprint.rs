@@ -224,6 +224,8 @@ mod tests {
             site: "cloudflare.com,dash.cloudflare.com".to_string(),
             label: None,
             account_hint: None,
+            note: None,
+            tags: Vec::new(),
             cookies,
             local_storage: None,
             created_at: now,

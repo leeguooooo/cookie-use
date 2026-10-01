@@ -4,6 +4,34 @@ All notable changes to cookie-use are documented here. Versions follow semver.
 
 ## [Unreleased]
 
+### Fixed
+- **`switch` no longer signs you out of every website.** It called chrome-use
+  `cookies clear` (CDP `Network.clearBrowserCookies`), which wipes the whole
+  browser. It now expires only the cookies stored for that site (from any
+  account that shares its domains), so other sites stay signed in.
+- Opening an account whose site lists a subdomain of its first host
+  (`cloudflare.com,dash.cloudflare.com`) lands on the subdomain (the
+  dashboard), not the marketing page. localStorage is captured and injected
+  on the same origin.
+
+### Added
+- `edit <id> [--label] [--hint] [--note] [--tags]` and per-account notes and
+  tags (searchable through `list`).
+- `list --json` rows carry `note`, `tags`, `live_until` (when the expiry
+  heuristic flips to expired) and `updated_at`.
+- Re-capturing an existing id keeps its label, hint, note, tags and
+  last-used time.
+- **CookieUse.app 0.2.0, rebuilt**: ⌥⌘K keyboard quick switcher with
+  pinned and recent accounts; capture that probes every Chrome profile for
+  the site (paste a URL or take Chrome's front tab); manager with sites,
+  tags, accounts that need attention, local-only favicons, editable
+  metadata, refresh login, side-by-side windows; `.cusession` document type
+  plus drag-and-drop import; Touch ID unlock window; launch at login; live
+  refresh when the vault changes.
+- App fixes: chrome-use's current `session list` JSON was not parsed, so the
+  app always showed "not connected" and disabled Switch; when launched from
+  Finder, cookie-use couldn't find chrome-use on PATH.
+
 ## [0.5.0] - 2026-09-29
 
 ### Changed

@@ -45,7 +45,7 @@ pub fn cmd_as(
 
     let parsed_target = crate::chrome_use::Target::parse(target)?;
 
-    let open_url = format!("https://{}", primary_domain(&account.site));
+    let open_url = format!("https://{}", crate::vault::landing_host(&account.site));
     let opts = crate::chrome_use::ApplyOpts {
         rewrite_domain: None,
         open_url: Some(&open_url),
@@ -128,16 +128,6 @@ pub(crate) fn child_env(id: &str, site: &str, target: &str) -> Vec<(String, Stri
     ]
 }
 
-/// First domain in a comma-separated site list, without a leading dot.
-fn primary_domain(site: &str) -> String {
-    site.split(',')
-        .next()
-        .unwrap_or(site)
-        .trim()
-        .trim_start_matches('.')
-        .to_string()
-}
-
 // ─── tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -198,23 +188,5 @@ mod tests {
     fn child_env_has_exactly_four_vars() {
         let env = child_env("a", "b.com", "session:s");
         assert_eq!(env.len(), 4);
-    }
-
-    // --- primary_domain ---
-
-    #[test]
-    fn primary_domain_strips_leading_dot() {
-        // site stored with a leading dot (cookie domain style)
-        assert_eq!(primary_domain(".example.com"), "example.com");
-    }
-
-    #[test]
-    fn primary_domain_takes_first_of_comma_list() {
-        assert_eq!(primary_domain("chatgpt.com,openai.com"), "chatgpt.com");
-    }
-
-    #[test]
-    fn primary_domain_trims_whitespace() {
-        assert_eq!(primary_domain(" github.com , api.github.com"), "github.com");
     }
 }

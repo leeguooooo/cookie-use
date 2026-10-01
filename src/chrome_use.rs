@@ -153,12 +153,55 @@ pub fn apply_isolated_named(
     apply(cookies, &Target::Session(session.to_string()), &opts)
 }
 
-/// Clear a site's cookies in a session target (used by `switch`).
-pub fn clear(target: &Target) -> Result<()> {
-    if let Target::Session(session) = target {
-        run(&["--session", session, "cookies", "clear"])?;
+/// Sign a site out of a session target before a clean switch (used by `switch`).
+///
+/// Never calls `chrome-use cookies clear`: that is CDP
+/// `Network.clearBrowserCookies`, which wipes *every* site in the user's real
+/// Chrome. Instead we expire exactly the cookies in `known` (name + domain +
+/// path, as previously stored for this site) by re-setting each with a past
+/// expiry, which Chrome treats as a delete. Isolated targets start empty.
+pub fn clear_site(target: &Target, known: &[Value]) -> Result<()> {
+    let Target::Session(session) = target else {
+        return Ok(());
+    };
+    let tombstones = tombstones(known);
+    if tombstones.is_empty() {
+        return Ok(());
     }
-    Ok(())
+    let tmp = write_temp_cookies(&tombstones)?;
+    let path = tmp.to_string_lossy().to_string();
+    let result = run(&["--session", session, "cookies", "set", "--curl", &path]);
+    let _ = std::fs::remove_file(&tmp);
+    result
+}
+
+/// One expired copy per distinct (name, domain, path), keeping the original
+/// flags so Secure / SameSite / partitioned cookies are actually overwritten.
+fn tombstones(cookies: &[Value]) -> Vec<Value> {
+    let mut seen = std::collections::HashSet::new();
+    cookies
+        .iter()
+        .filter_map(|c| {
+            let obj = c.as_object()?;
+            let key = (
+                obj.get("name")?.as_str()?.to_string(),
+                obj.get("domain")?.as_str()?.to_string(),
+                obj.get("path")
+                    .and_then(Value::as_str)
+                    .unwrap_or("/")
+                    .to_string(),
+            );
+            if !seen.insert(key) {
+                return None;
+            }
+            let mut t = obj.clone();
+            t.insert("value".into(), json!(""));
+            t.insert("expires".into(), json!(1));
+            t.remove("session");
+            t.remove("size");
+            Some(Value::Object(t))
+        })
+        .collect()
 }
 
 /// Return a copy of `cookies` with every `domain` rewritten to `host`. Used by
@@ -279,6 +322,23 @@ mod tests {
         // Non-domain fields are preserved.
         assert_eq!(out[0]["value"], json!("a"));
         assert_eq!(out[1]["name"], json!("sid"));
+    }
+
+    #[test]
+    fn tombstones_expire_each_distinct_cookie_once() {
+        let cookies = vec![
+            json!({"name": "sid", "value": "a", "domain": ".x.com", "path": "/", "secure": true, "session": false, "size": 4}),
+            json!({"name": "sid", "value": "b", "domain": ".x.com", "path": "/"}),
+            json!({"name": "sid", "value": "c", "domain": "app.x.com", "path": "/"}),
+            json!({"value": "no-name"}),
+        ];
+        let t = tombstones(&cookies);
+        assert_eq!(t.len(), 2);
+        assert_eq!(t[0]["value"], json!(""));
+        assert_eq!(t[0]["expires"], json!(1));
+        assert_eq!(t[0]["secure"], json!(true));
+        assert!(t[0].get("session").is_none() && t[0].get("size").is_none());
+        assert_eq!(t[1]["domain"], json!("app.x.com"));
     }
 
     #[test]

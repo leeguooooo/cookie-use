@@ -85,6 +85,28 @@ day, in the background (2 s timeout, cached in
 exists print one line to stderr on each run. `COOKIE_USE_NO_UPDATE_CHECK=1`,
 `USE_NO_UPDATE_CHECK=1` or `CI` turn that off.
 
+### Mac app (CookieUse.app)
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/leeguooooo/cookie-use/main/install-app.sh | sh
+```
+
+A menu-bar quick switcher over the same vault the CLI and your agents use:
+
+- **⌥⌘K from anywhere**: type to filter by name, site, tag or note; ↩ signs
+  Chrome in as that account, ⌘↩ opens it in a separate window, ⌘1–9 jumps to
+  pinned and recent accounts.
+- **Save a login without typing profile names**: paste a URL (or take Chrome's
+  current tab), and the app checks every Chrome profile and lists the ones
+  with cookies for that site, most cookies first.
+- **Manager window**: sites with their favicons (read from Chrome's local
+  cache, never fetched), tags, notes, pins, accounts that have expired or
+  will soon, "Refresh login", side-by-side windows, encrypted share bundles.
+  Drop a `.cusession` or a cookie export onto the window, or double-click a
+  bundle, to import it.
+- Touch ID before injecting (every time, once per 10 minutes, or never), and
+  live updates when an agent changes the vault from a terminal.
+
 ### As an agent skill (skills.sh)
 
 Install the cookie-use skill into your agent so it knows how to drive the CLI
@@ -109,7 +131,7 @@ See <https://www.skills.sh/docs>. The skill lives at `skills/cookie-use/SKILL.md
 | `cookie-use list [<site>]` | List stored accounts, grouped by website. `<site>` filters by a domain **or full URL** (e.g. `cookie-use list dash.cloudflare.com` or `cookie-use list https://dash.cloudflare.com/`). |
 | `cookie-use show <id>` | Account metadata (never prints cookie values) |
 | `cookie-use use <id> [--target session:<s>\|isolated] [--rewrite-domain <host>] [--open-url <url>]` | Apply an account into a browser target |
-| `cookie-use switch <id> --target <…>` | Clear the site's cookies in the target, then apply (clean switch) |
+| `cookie-use switch <id> --target <…>` | Sign the site's previous account out, then apply (clean switch). Only cookies known for that site are expired — other sites stay signed in |
 | `cookie-use check <id>` | Liveness from cookie expiry (generic; site probes are pluggable later) |
 | `cookie-use fingerprint <id> \| --all [--json]` | Export a **hash-only** fingerprint (SHA-256 of each cookie value, never the value) so another tool can verify a live session is this account. Cached in a plaintext sidecar; reads need no decrypt |
 | `cookie-use replay <id> --to localhost:8001` | Cross-origin QA sugar: rewrite domain + open the dev origin in one command |
@@ -117,6 +139,7 @@ See <https://www.skills.sh/docs>. The skill lives at `skills/cookie-use/SKILL.md
 | `cookie-use as <id> --target <…> -- <cmd>` | Run `<cmd>` in a session-scoped env (`COOKIE_USE_*`, `CHROME_USE_SESSION`) — an agent acts **as** that account |
 | `cookie-use share <id> [--out <f>] [--password <pw>]` | Export a **password-encrypted** `.cusession` bundle (argon2id + AES-256-GCM) |
 | `cookie-use redeem <f> [--password <pw>] [--id <new>]` | Import a shared bundle (installing cookie-use is the cost of redeeming) |
+| `cookie-use edit <id> [--label] [--hint] [--note] [--tags a,b]` | Edit metadata (`""` clears a field). Tags and notes are searchable via `list` |
 | `cookie-use rm <id>` / `revoke <id>` / `rename <id> <new>` | Manage entries |
 | `cookie-use wipe [--yes]` | Delete the entire vault |
 

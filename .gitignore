@@ -6,3 +6,4 @@ app/build/
 app/.build/
 app/*.xcodeproj/xcuserdata/
 app/*.xcodeproj/project.xcworkspace/xcuserdata/
+.DS_Store

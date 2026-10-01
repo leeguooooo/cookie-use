@@ -4,6 +4,8 @@ All notable changes to cookie-use are documented here. Versions follow semver.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-02
+
 ### Added
 - **Sync through a private GitHub repo — no server**:
   `cloud setup --github <owner/repo> [--create]`. The vault is one sealed

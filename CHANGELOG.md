@@ -4,6 +4,8 @@ All notable changes to cookie-use are documented here. Versions follow semver.
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-10-02
+
 ### Added
 - **`verify`**: tests whether a saved session still signs in, instead of only
   trusting cookie expiry. It replays the session in one throwaway, off-screen

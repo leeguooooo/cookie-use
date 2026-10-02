@@ -50,7 +50,7 @@ final class VaultWatcher {
             pending?.cancel()
             let work = DispatchWorkItem { self?.onChange() }
             pending = work
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: work)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8, execute: work)
         }
         let fd = fd
         src.setCancelHandler { close(fd) }

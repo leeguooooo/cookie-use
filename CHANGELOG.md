@@ -4,6 +4,8 @@ All notable changes to cookie-use are documented here. Versions follow semver.
 
 ## [Unreleased]
 
+## [0.11.2] - 2026-10-02
+
 ### Fixed
 - App: the menu-bar quick switcher could peg a CPU at 100% and freeze when the
   vault changed rapidly (an agent or repeated CLI syncs writing in a burst).

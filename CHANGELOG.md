@@ -4,6 +4,8 @@ All notable changes to cookie-use are documented here. Versions follow semver.
 
 ## [Unreleased]
 
+## [0.11.4] - 2026-10-02
+
 ### Changed
 - Quick switcher: each account shows once (no more Recent duplicating the site
   groups), the panel is taller (up to 600 pt), and logins that no longer work

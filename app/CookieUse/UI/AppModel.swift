@@ -155,22 +155,47 @@ final class AppModel: ObservableObject {
 
     // MARK: Loading
 
+    private var refreshing = false
+    private var refreshAgain = false
+
     func refresh() async {
-        isLoading = true
+        // Never run two refreshes at once: the vault watcher can fire a burst
+        // (an agent writing in a loop), and overlapping refreshes republishing
+        // the same @Published arrays kept SwiftUI re-rendering forever. Coalesce
+        // into one in-flight run plus at most one queued follow-up.
+        if refreshing { refreshAgain = true; return }
+        refreshing = true
+        defer { refreshing = false }
+        repeat {
+            refreshAgain = false
+            await refreshOnce()
+        } while refreshAgain
+    }
+
+    private func refreshOnce() async {
+        if !hasLoaded { isLoading = true }
         defer { isLoading = false; hasLoaded = true }
-        missingBinaries = await bridge.missingBinaries()
-        guard !missingBinaries.contains("cookie-use") else { accounts = []; return }
+        let missing = await bridge.missingBinaries()
+        setIfChanged(\.missingBinaries, missing)
+        guard !missing.contains("cookie-use") else { setIfChanged(\.accounts, []); return }
         async let list = bridge.listAccounts()
         async let browsers = bridge.connectedBrowsers()
         do {
             let (a, b) = try await (list, browsers)
-            accounts = a
-            connectedBrowsers = b
+            // Only publish when the value actually changed, so an identical
+            // refresh doesn't invalidate the whole view tree.
+            setIfChanged(\.accounts, a)
+            setIfChanged(\.connectedBrowsers, b)
             prefs.reconcile(validIDs: Set(a.map(\.id)))
         } catch {
-            connectedBrowsers = await browsers
+            setIfChanged(\.connectedBrowsers, await browsers)
             show(.error(error.localizedDescription))
         }
+    }
+
+    /// Assign only when different, to avoid a no-op `@Published` republish.
+    private func setIfChanged<T: Equatable>(_ key: ReferenceWritableKeyPath<AppModel, T>, _ value: T) {
+        if self[keyPath: key] != value { self[keyPath: key] = value }
     }
 
     // MARK: Opening sessions

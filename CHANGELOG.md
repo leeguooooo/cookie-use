@@ -4,6 +4,14 @@ All notable changes to cookie-use are documented here. Versions follow semver.
 
 ## [Unreleased]
 
+### Fixed
+- App: the menu-bar quick switcher could peg a CPU at 100% and freeze when the
+  vault changed rapidly (an agent or repeated CLI syncs writing in a burst).
+  Overlapping vault-watcher refreshes kept republishing identical data and drove
+  SwiftUI into an endless re-render. Refreshes are now coalesced (one in-flight
+  plus at most one queued), unchanged results aren't republished, and the
+  watcher debounce is longer.
+
 ## [0.11.1] - 2026-10-02
 
 ### Fixed

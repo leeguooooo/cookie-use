@@ -4,6 +4,23 @@ All notable changes to cookie-use are documented here. Versions follow semver.
 
 ## [Unreleased]
 
+### Added
+- **`verify`**: tests whether a saved session still signs in, instead of only
+  trusting cookie expiry. It replays the session in one throwaway, off-screen
+  browser and compares against an anonymous visit — landing on a sign-in page
+  means the login is dead. Site-agnostic. The result (`valid`/`invalid`) is
+  written back and surfaced in `list`/`show --json`.
+- App: a "Verify logins" toolbar button and per-account "Check", an honest
+  status — a hollow grey dot now means "cookies present, login not checked",
+  green means a login confirmed by replay, red means confirmed dead — and
+  "Needs attention" includes confirmed-dead logins.
+
+### Changed
+- **Sync never lets a dead login overwrite a working one.** If one computer
+  re-captured a logged-out profile (a newer but dead session), a sync keeps the
+  other computer's session that still works, instead of taking the newer copy
+  (reported as `kept_working`).
+
 ## [0.10.0] - 2026-10-02
 
 ### Changed

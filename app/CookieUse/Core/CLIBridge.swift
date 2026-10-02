@@ -146,6 +146,19 @@ actor CLIBridge {
         try await json(["check", id], as: CheckResponse.self).status
     }
 
+    struct VerifyResponse: Decodable {
+        let checked: Int
+        let valid: Int
+        let invalid: Int
+    }
+
+    /// Replay saved sessions in a throwaway browser to see which still sign in.
+    /// Slow (opens a real browser), so it runs only when asked. `ids` empty = all.
+    func verify(ids: [String]) async throws -> VerifyResponse {
+        // No Touch ID: it reads, never injects into the user's own browser.
+        try await json(["verify"] + ids, as: VerifyResponse.self)
+    }
+
     // MARK: chrome-use
 
     private struct Envelope<T: Decodable>: Decodable { let success: Bool?; let data: T? }

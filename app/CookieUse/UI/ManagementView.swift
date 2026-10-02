@@ -42,12 +42,17 @@ struct ManagementView: View {
                     Label("Sync between Macs", systemImage: model.syncing ? "arrow.triangle.2.circlepath" : "arrow.triangle.2.circlepath.icloud")
                 }
                 .help(model.cloud?.configured == true ? "Sync is on — click to sync now or change it" : "Keep the same logins on all your Macs (GitHub private repo or CookieCloud)")
+                Button { Task { await model.verify() } } label: {
+                    Label("Verify logins", systemImage: model.verifying ? "circle.dotted" : "checkmark.shield")
+                }
+                .disabled(model.verifying)
+                .help("Open each site off-screen to test which logins still work")
                 Menu {
                     Button("Export logins…") { model.sheet = .export(site: nil) }
                     Button("Import a .cusession file…") { model.sheet = .redeem(nil) }
                     Button("Import a cookie file…") { model.sheet = .importFile(nil) }
                     Divider()
-                    Button("Check all sessions") { Task { await model.checkAll() } }
+                    Button("Verify all logins work…") { Task { await model.verify() } }
                 } label: { Label("More", systemImage: "square.and.arrow.down") }
                 Button { Task { await model.refresh() } } label: { Label("Refresh", systemImage: "arrow.clockwise") }
                     .keyboardShortcut("r")
@@ -294,7 +299,7 @@ struct DetailPane: View {
             .buttonStyle(.bordered).controlSize(.large)
             .help("A fresh browser with only this account — your Chrome is untouched")
 
-            if account.effectiveStatus == .expired || account.expiresSoon() {
+            if account.needsAttention {
                 Button { model.sheet = .capture(prefill: .init(site: account.site, id: account.id, label: account.label)) } label: {
                     Label("Refresh login", systemImage: "arrow.clockwise")
                 }
@@ -303,6 +308,8 @@ struct DetailPane: View {
 
             Menu {
                 Button(model.prefs.isPinned(account.id) ? "Unpin" : "Pin to quick switcher") { model.prefs.togglePin(account.id) }
+                Button("Check this login works") { Task { await model.verify(ids: [account.id]) } }
+                    .disabled(model.verifying)
                 Button("Refresh login…") {
                     model.sheet = .capture(prefill: .init(site: account.site, id: account.id, label: account.label))
                 }
@@ -369,6 +376,7 @@ struct DetailPane: View {
                 }
                 fact("Updated", relative(d.updatedAt))
                 if let last = d.lastUsedAt { fact("Last used", relative(last)) }
+                verifyRow(d.verified)
                 Text("Stored only on this Mac, AES-256-GCM encrypted. Cookie values are never shown.")
                     .font(.caption).foregroundStyle(.tertiary).padding(.top, 2)
             } else if let loadError {
@@ -378,7 +386,37 @@ struct DetailPane: View {
             }
         }
         .font(.callout)
-        .infoCard(border: account.effectiveStatus.color)
+        .infoCard(border: account.health.color == .secondary ? .secondary : account.health.color)
+    }
+
+    /// The honest login-health row: a real check if we have one, else a prompt.
+    @ViewBuilder
+    private func verifyRow(_ v: VerifyInfo?) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Text("Login").foregroundStyle(.secondary).frame(width: 96, alignment: .leading)
+            if model.verifying {
+                HStack(spacing: 6) { ProgressView().controlSize(.small); Text("Checking…") }
+            } else if let v, v.result == "valid" {
+                Label("Signed in" + checkedWhen(v), systemImage: "checkmark.seal.fill").foregroundStyle(.green)
+            } else if let v, v.result == "invalid" {
+                VStack(alignment: .leading, spacing: 2) {
+                    Label("Needs login" + checkedWhen(v), systemImage: "person.crop.circle.badge.xmark").foregroundStyle(.red)
+                    if let r = v.reason { Text(r).font(.caption).foregroundStyle(.secondary) }
+                }
+            } else {
+                HStack(spacing: 8) {
+                    Text("not checked — a green dot only means cookies haven’t expired").foregroundStyle(.secondary)
+                }
+            }
+            Spacer(minLength: 0)
+            if !model.verifying {
+                Button("Check") { Task { await model.verify(ids: [account.id]) } }.controlSize(.small)
+            }
+        }
+    }
+
+    private func checkedWhen(_ v: VerifyInfo) -> String {
+        v.at.flatMap(ISO8601.parse).map { " · checked \($0.relative)" } ?? ""
     }
 
     private var agentCard: some View {

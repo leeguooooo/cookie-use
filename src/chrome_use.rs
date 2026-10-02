@@ -334,6 +334,79 @@ fn tombstones(cookies: &[Value]) -> Vec<Value> {
         .collect()
 }
 
+/// Session name used by `verify`'s throwaway browser.
+pub const VERIFY_SESSION: &str = "cookie-use-verify";
+
+/// Launch `verify`'s throwaway browser off-screen: a real (headed) browser,
+/// since sites treat headless ones as bots, parked where it won't get in the way.
+pub fn launch_offscreen() -> Result<()> {
+    run(&[
+        "--session",
+        VERIFY_SESSION,
+        "--launch",
+        "--args",
+        "--window-position=-32000,-32000 --window-size=1000,800",
+        "open",
+        "about:blank",
+    ])
+}
+
+/// Wipe cookies in `verify`'s own throwaway browser between probes. Never
+/// used on any other session (that would sign the user out everywhere).
+pub fn clear_verify_browser() -> Result<()> {
+    run(&["--session", VERIFY_SESSION, "cookies", "clear"])
+}
+
+pub fn close_verify_browser() {
+    let _ = run(&["--session", VERIFY_SESSION, "close"]);
+}
+
+/// What a page looks like once it settles.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PageState {
+    pub url: String,
+    pub title: String,
+    pub has_password: bool,
+}
+
+fn text_of(out: Vec<u8>) -> String {
+    let s = String::from_utf8_lossy(&out);
+    let s = s.trim();
+    s.strip_prefix("✓ ")
+        .unwrap_or(s)
+        .trim()
+        .trim_matches('"')
+        .to_string()
+}
+
+/// Open `url` in `verify`'s browser and read where it lands.
+pub fn visit(url: &str) -> Result<PageState> {
+    run(&["--session", VERIFY_SESSION, "open", url])?;
+    page_state()
+}
+
+/// Read the current page of `verify`'s browser after SPA redirects settle.
+pub fn page_state() -> Result<PageState> {
+    let _ = run(&["--session", VERIFY_SESSION, "wait", "2000"]);
+    let url = text_of(capture(&["--session", VERIFY_SESSION, "get", "url"])?);
+    let title =
+        text_of(capture(&["--session", VERIFY_SESSION, "get", "title"]).unwrap_or_default());
+    let pw = text_of(
+        capture(&[
+            "--session",
+            VERIFY_SESSION,
+            "eval",
+            "!!document.querySelector('input[type=password]')",
+        ])
+        .unwrap_or_default(),
+    );
+    Ok(PageState {
+        url,
+        title,
+        has_password: pw.ends_with("true"),
+    })
+}
+
 /// Return a copy of `cookies` with every `domain` rewritten to `host`. Used by
 /// `--rewrite-domain` so a session captured on one origin can be replayed on
 /// another (e.g. a production `.example.com` token reused on `localhost`).

@@ -27,6 +27,7 @@ struct AccountSummary: Codable, Equatable, Identifiable, Hashable {
     let tags: [String]?
     let liveUntil: String?
     let updatedAt: String?
+    let verified: VerifyInfo?
 
     /// All hosts this session covers.
     var hosts: [String] {
@@ -60,6 +61,41 @@ struct AccountSummary: Codable, Equatable, Identifiable, Hashable {
         return until.timeIntervalSinceNow < days * 86_400
     }
 
+    /// Verified by actually replaying the session (not just cookie expiry).
+    var verifiedResult: String? { verified?.result }
+    var knownBroken: Bool { verified?.result == "invalid" }
+    var confirmedWorking: Bool { verified?.result == "valid" }
+    var verifiedDate: Date? { verified?.at.flatMap(ISO8601.parse) }
+
+    /// One honest status that folds in an actual login check when we have one.
+    /// A green dot otherwise means only "cookies haven't expired", never
+    /// "definitely signed in" — the distinction the user asked for.
+    enum Health {
+        case confirmedWorking   // replayed and signed in
+        case broken             // replayed and hit a sign-in page
+        case expired            // cookies past their expiry
+        case expiringSoon
+        case uncheckedLive      // cookies present, never actually tested
+        case unknown
+    }
+
+    var health: Health {
+        if confirmedWorking { return .confirmedWorking }
+        if knownBroken { return .broken }
+        if effectiveStatus == .expired { return .expired }
+        if expiresSoon() { return .expiringSoon }
+        if effectiveStatus == .live { return .uncheckedLive }
+        return .unknown
+    }
+
+    /// Needs the user's attention on the "Needs attention" list.
+    var needsAttention: Bool {
+        switch health {
+        case .broken, .expired, .expiringSoon: return true
+        default: return false
+        }
+    }
+
     func matches(_ query: String) -> Bool {
         let q = query.trimmingCharacters(in: .whitespaces).lowercased()
         guard !q.isEmpty else { return true }
@@ -87,6 +123,15 @@ struct Account: Codable, Equatable, Identifiable {
     let createdAt: String
     let updatedAt: String
     let lastUsedAt: String?
+    let verified: VerifyInfo?
+}
+
+/// Result of actually replaying a session (`verify`): does it still sign in?
+struct VerifyInfo: Codable, Equatable, Hashable {
+    let result: String  // "valid" | "invalid" | "unknown"
+    let at: String?
+    let reason: String?
+    let url: String?
 }
 
 /// Result of an injection (`use`/`switch`/`replay` `--json`).

@@ -43,6 +43,9 @@ pub struct Account {
     pub session_updated_at: Option<DateTime<Utc>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub meta_updated_at: Option<DateTime<Utc>>,
+    /// The last `verify` of this account's session (does it actually sign in?).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verified: Option<Verification>,
     #[serde(default)]
     pub status: Status,
     // Reserved for v2 (anti-correlation). Kept optional so the model is stable.
@@ -52,7 +55,34 @@ pub struct Account {
     pub fingerprint: Option<Value>,
 }
 
+/// Outcome of replaying a session in a throwaway browser.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Verification {
+    pub at: DateTime<Utc>,
+    /// "valid" (signed in), "invalid" (lands on a sign-in page) or "unknown".
+    pub result: String,
+    pub reason: String,
+    /// Where the site ended up.
+    #[serde(default)]
+    pub url: String,
+    /// The session version this was checked against; a re-capture makes it stale.
+    pub session_at: DateTime<Utc>,
+}
+
 impl Account {
+    /// The verification of the *current* session, if any.
+    pub fn current_verification(&self) -> Option<&Verification> {
+        self.verified
+            .as_ref()
+            .filter(|v| v.session_at == self.session_ts())
+    }
+
+    /// Known not to sign in (checked, and nothing re-captured since).
+    pub fn known_broken(&self) -> bool {
+        self.current_verification()
+            .is_some_and(|v| v.result == "invalid")
+    }
+
     pub fn session_ts(&self) -> DateTime<Utc> {
         self.session_updated_at.unwrap_or(self.updated_at)
     }
@@ -172,6 +202,10 @@ pub struct MergeReport {
     /// changes were combined rather than one side discarded.
     #[serde(default)]
     pub merged: Vec<String>,
+    /// Newer copies that were skipped because they're known not to sign in,
+    /// while ours does (or isn't known broken).
+    #[serde(default)]
+    pub kept_working: Vec<String>,
     pub unchanged: usize,
 }
 
@@ -433,7 +467,18 @@ impl Vault {
                 self.data.accounts.push(acct);
                 continue;
             };
-            let take_session = acct.session_ts() > local.session_ts();
+            // A session known not to sign in never replaces one that isn't —
+            // even if it is newer (e.g. re-captured from a logged-out profile).
+            // Otherwise the newer session wins.
+            let (remote_bad, local_bad) = (acct.known_broken(), local.known_broken());
+            let take_session = if remote_bad != local_bad {
+                if remote_bad && acct.session_ts() > local.session_ts() {
+                    report.kept_working.push(acct.id.clone());
+                }
+                !remote_bad
+            } else {
+                acct.session_ts() > local.session_ts()
+            };
             let take_meta = acct.meta_ts() > local.meta_ts();
             if take_session {
                 local.site = acct.site.clone();
@@ -441,6 +486,14 @@ impl Vault {
                 local.local_storage = acct.local_storage.clone();
                 local.status = acct.status;
                 local.session_updated_at = Some(acct.session_ts());
+                local.verified = acct.verified.clone();
+            } else if let Some(v) = acct.current_verification() {
+                // A newer check of the same session we kept (made elsewhere).
+                if v.session_at == local.session_ts()
+                    && local.verified.as_ref().is_none_or(|l| v.at > l.at)
+                {
+                    local.verified = Some(v.clone());
+                }
             }
             if take_meta {
                 local.label = acct.label.clone();
@@ -579,6 +632,7 @@ mod merge_tests {
             last_used_at: None,
             session_updated_at: None,
             meta_updated_at: None,
+            verified: None,
             status: Status::Live,
             proxy: None,
             fingerprint: None,
@@ -620,6 +674,35 @@ mod merge_tests {
         a.touch_meta();
         assert!(a.meta_ts() > ahead);
         assert!(a.updated_at > ahead);
+    }
+
+    fn broken(id: &str, at: DateTime<Utc>) -> Account {
+        let mut a = acct(id, at);
+        a.session_updated_at = Some(at);
+        a.verified = Some(Verification {
+            at,
+            result: "invalid".into(),
+            reason: "test".into(),
+            url: String::new(),
+            session_at: at,
+        });
+        a
+    }
+
+    #[test]
+    fn a_newer_but_dead_session_never_overwrites_a_working_one() {
+        let t = Utc::now();
+        let mut local = acct("a", t);
+        local.session_updated_at = Some(t);
+        local.cookies = vec![serde_json::json!({"name": "sid", "value": "works"})];
+        let mut v = vault(vec![local]);
+
+        let mut dead = broken("a", t + Duration::seconds(60));
+        dead.cookies = vec![serde_json::json!({"name": "sid", "value": "dead"})];
+        let r = v.merge(vec![dead], &BTreeMap::new());
+
+        assert_eq!(r.kept_working, vec!["a"]);
+        assert_eq!(v.find("a").unwrap().cookies[0]["value"], "works");
     }
 
     #[test]

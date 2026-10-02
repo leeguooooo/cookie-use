@@ -120,6 +120,9 @@ cookie-use cloud setup --github <owner/repo> [--create] [--password P]      # sy
 cookie-use cloud setup --endpoint <cookiecloud-url> [--uuid U --password P]  # …or a CookieCloud server
 cookie-use cloud sync                                                       # pull, merge (login & metadata separately), push
 cookie-use cloud backups / cloud restore <name>                             # undo a sync that changed the vault
+
+# Is a saved login actually still valid? (expiry != working; replays it in a throwaway browser)
+cookie-use verify [<id>…] [--site <d>]      # marks each valid / invalid / unknown, writes it back
 cookie-use cloud domains / cloud import <domain> --id <id>                  # use CookieCloud extension uploads
 
 # Manage.

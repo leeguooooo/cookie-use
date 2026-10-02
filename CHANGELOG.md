@@ -4,6 +4,12 @@ All notable changes to cookie-use are documented here. Versions follow semver.
 
 ## [Unreleased]
 
+### Fixed
+- A sync no longer wipes `verify` results: an unverified copy of the *same*
+  session (e.g. a push made before the account was checked) kept overwriting a
+  verified one. The same session is now never swapped on merge — only a newer
+  verification of it flows in.
+
 ## [0.11.0] - 2026-10-02
 
 ### Added

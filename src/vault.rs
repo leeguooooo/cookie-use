@@ -467,11 +467,18 @@ impl Vault {
                 self.data.accounts.push(acct);
                 continue;
             };
-            // A session known not to sign in never replaces one that isn't —
-            // even if it is newer (e.g. re-captured from a logged-out profile).
-            // Otherwise the newer session wins.
+            // Same session on both sides (identical capture): never swap the
+            // cookies — only let a verification result flow in below. This also
+            // stops an unverified copy of the same session from wiping our
+            // verified result.
+            let same_session = acct.session_ts() == local.session_ts();
+            // Different sessions: a known-dead one never replaces one that isn't
+            // known dead, even if it is newer (e.g. re-captured from a
+            // logged-out profile). Otherwise the newer session wins.
             let (remote_bad, local_bad) = (acct.known_broken(), local.known_broken());
-            let take_session = if remote_bad != local_bad {
+            let take_session = if same_session {
+                false
+            } else if remote_bad != local_bad {
                 if remote_bad && acct.session_ts() > local.session_ts() {
                     report.kept_working.push(acct.id.clone());
                 }
@@ -687,6 +694,32 @@ mod merge_tests {
             session_at: at,
         });
         a
+    }
+
+    #[test]
+    fn an_unverified_copy_of_the_same_session_does_not_wipe_a_verified_result() {
+        // Local verified this session as dead; remote is the SAME session,
+        // pushed before the check (no verification). A sync must keep the result.
+        let t = Utc::now();
+        let mut local = broken("a", t);
+        local.session_updated_at = Some(t);
+        local.meta_updated_at = Some(t);
+        let mut v = vault(vec![local]);
+
+        let mut remote = acct("a", t); // identical session_ts, no verified
+        remote.session_updated_at = Some(t);
+        remote.meta_updated_at = Some(t);
+        let r = v.merge(vec![remote], &BTreeMap::new());
+
+        assert_eq!(r.unchanged, 1);
+        assert!(
+            r.updated.is_empty(),
+            "same session must not count as updated"
+        );
+        assert!(
+            v.find("a").unwrap().known_broken(),
+            "verified result survived"
+        );
     }
 
     #[test]

@@ -14,6 +14,7 @@ struct MenuBarView: View {
     @State private var selectedKey: String?
     @State private var hoveredKey: String?
     @State private var contentHeight: CGFloat = 0
+    @State private var showDead = false
     @FocusState private var searchFocused: Bool
 
     private struct Section: Identifiable {
@@ -61,18 +62,40 @@ struct MenuBarView: View {
 
     // MARK: Data
 
+    /// Confirmed not to sign in (verified invalid) or expired cookies. These
+    /// drop to a collapsed "Needs login" section so the working ones show first.
+    private func isDead(_ a: AccountSummary) -> Bool {
+        a.health == .broken || a.health == .expired
+    }
+
+    /// Working accounts (not dead), sorted so Needs-login never hides them.
+    private var liveAccounts: [AccountSummary] { model.accounts.filter { !isDead($0) } }
+    private var deadAccounts: [AccountSummary] {
+        model.accounts.filter(isDead).sorted { $0.primarySite == $1.primarySite ? $0.displayName.lowercased() < $1.displayName.lowercased() : $0.primarySite < $1.primarySite }
+    }
+
     private var sections: [Section] {
         let q = query.trimmingCharacters(in: .whitespaces)
         if !q.isEmpty {
+            // Search spans everything, dead included, so nothing is unfindable.
             let hits = model.accounts.filter { $0.matches(q) }
                 .sorted { rank($0, q) == rank($1, q) ? $0.displayName < $1.displayName : rank($0, q) < rank($1, q) }
             return hits.isEmpty ? [] : [Section(title: "Results", accounts: hits)]
         }
         var out: [Section] = []
-        if !model.pinnedAccounts.isEmpty { out.append(Section(title: "Pinned", accounts: model.pinnedAccounts)) }
-        let recent = Array(model.recentAccounts.prefix(4))
-        if !recent.isEmpty { out.append(Section(title: "Recent", accounts: recent)) }
-        let grouped = Dictionary(grouping: model.accounts, by: { Favicons.key($0.primarySite) })
+        // Each account appears once: pinned, then recent, then under its site.
+        var shown = Set<String>()
+        let pinned = model.pinnedAccounts.filter { !isDead($0) }
+        if !pinned.isEmpty {
+            out.append(Section(title: "Pinned", accounts: pinned))
+            shown.formUnion(pinned.map(\.id))
+        }
+        let recent = model.recentAccounts.filter { !isDead($0) && !shown.contains($0.id) }.prefix(5)
+        if !recent.isEmpty {
+            out.append(Section(title: "Recent", accounts: Array(recent)))
+            shown.formUnion(recent.map(\.id))
+        }
+        let grouped = Dictionary(grouping: liveAccounts.filter { !shown.contains($0.id) }, by: { Favicons.key($0.primarySite) })
         for site in grouped.keys.sorted() {
             out.append(Section(title: site, accounts: grouped[site]!.sorted { $0.displayName.lowercased() < $1.displayName.lowercased() }))
         }
@@ -89,7 +112,12 @@ struct MenuBarView: View {
     }
 
     private var entries: [Entry] {
-        sections.flatMap { s in s.accounts.map { Entry(key: "\(s.title)|\($0.id)", account: $0) } }
+        var all = sections.flatMap { s in s.accounts.map { Entry(key: "\(s.title)|\($0.id)", account: $0) } }
+        // Dead accounts join keyboard nav only while the section is expanded.
+        if query.isEmpty, showDead {
+            all += deadAccounts.map { Entry(key: "dead|\($0.id)", account: $0) }
+        }
+        return all
     }
 
     private var selectedAccount: AccountSummary? {
@@ -183,7 +211,9 @@ struct MenuBarView: View {
             MissingToolsView(missing: model.missingBinaries) { Task { await model.refresh() } }
         } else if model.accounts.isEmpty {
             emptyState
-        } else if sections.isEmpty {
+        } else if sections.isEmpty, !(query.isEmpty && !deadAccounts.isEmpty) {
+            // Empty only counts as "no match" while searching; with an empty
+            // query and every account dead, still show the Needs-login list.
             VStack(spacing: 8) {
                 Image(systemName: "magnifyingglass").font(.title2).foregroundStyle(.tertiary)
                 Text("No account matches “\(query)”").font(.callout).foregroundStyle(.secondary)
@@ -228,16 +258,42 @@ struct MenuBarView: View {
                             row(account, key: key, number: numbered[key], inSiteGroup: section.title.contains(".")).id(key)
                         }
                     }
+                    if query.isEmpty, !deadAccounts.isEmpty { deadSection }
                 }
                 .padding(.bottom, 6)
                 // Measure the real content height (a plain VStack, so it's
                 // stable and independent of the ScrollView's frame — no layout
-                // feedback). The ScrollView is then content-sized up to 400.
+                // feedback). The ScrollView is then content-sized up to the cap.
                 .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { contentHeight = $0 }
             }
-            .frame(height: min(max(contentHeight, 1), 400))
+            .frame(height: min(max(contentHeight, 1), 600))
             .onChange(of: selectedKey) { _, key in
                 if let key { withAnimation(.easeOut(duration: 0.1)) { proxy.scrollTo(key) } }
+            }
+        }
+    }
+
+    /// Collapsed-by-default footer holding every login that no longer works.
+    @ViewBuilder
+    private var deadSection: some View {
+        Button {
+            withAnimation(.snappy(duration: 0.15)) { showDead.toggle() }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: showDead ? "chevron.down" : "chevron.right").font(.caption2)
+                Text("Needs login").font(.caption.weight(.semibold))
+                Text("\(deadAccounts.count)").font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                Spacer()
+            }
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 16).padding(.top, 10).padding(.bottom, 2)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        if showDead {
+            ForEach(deadAccounts) { account in
+                row(account, key: "dead|\(account.id)", number: nil, inSiteGroup: false).id("dead|\(account.id)")
             }
         }
     }

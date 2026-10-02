@@ -26,8 +26,8 @@ targets:
         CFBundleName: $(PRODUCT_NAME)
         CFBundleDisplayName: CookieUse
         CFBundlePackageType: APPL
-        CFBundleShortVersionString: "0.6.2"
-        CFBundleVersion: "8"
+        CFBundleShortVersionString: "0.6.3"
+        CFBundleVersion: "9"
         LSMinimumSystemVersion: "26.0"
         LSUIElement: true
         LSApplicationCategoryType: public.app-category.developer-tools

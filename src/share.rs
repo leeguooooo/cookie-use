@@ -476,6 +476,7 @@ mod tests {
             last_used_at: None,
             session_updated_at: None,
             meta_updated_at: None,
+            verified: None,
             status: Status::Live,
             proxy: None,
             fingerprint: None,

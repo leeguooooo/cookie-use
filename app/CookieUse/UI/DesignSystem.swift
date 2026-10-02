@@ -96,34 +96,84 @@ struct SiteIcon: View {
     }
 }
 
+extension AccountSummary.Health {
+    var color: Color {
+        switch self {
+        case .confirmedWorking: return .green
+        case .broken, .expired: return .red
+        case .expiringSoon: return .yellow
+        case .uncheckedLive: return .secondary   // grey: cookies present, not actually tested
+        case .unknown: return .secondary
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .confirmedWorking: return "checkmark.seal.fill"
+        case .broken: return "person.crop.circle.badge.xmark"
+        case .expired: return "exclamationmark.triangle.fill"
+        case .expiringSoon: return "clock.badge.exclamationmark"
+        case .uncheckedLive: return "circle.dashed"
+        case .unknown: return "questionmark.circle"
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .confirmedWorking: return "Signed in"
+        case .broken: return "Needs login"
+        case .expired: return "Expired"
+        case .expiringSoon: return "Expiring soon"
+        case .uncheckedLive: return "Not checked"
+        case .unknown: return "Unknown"
+        }
+    }
+}
+
 /// Small status capsule used in headers.
 struct StatusBadge: View {
     let account: AccountSummary
 
     var body: some View {
-        let status = account.effectiveStatus
-        Label(label, systemImage: status.symbol)
+        let h = account.health
+        Label(label, systemImage: h.symbol)
             .font(.caption.weight(.semibold))
             .padding(.horizontal, 8)
             .padding(.vertical, 3)
-            .foregroundStyle(account.expiresSoon() ? .yellow : status.color)
-            .background((account.expiresSoon() ? Color.yellow : status.color).opacity(0.15), in: Capsule())
+            .foregroundStyle(h.color == .secondary ? .secondary : h.color)
+            .background((h.color == .secondary ? Color.secondary : h.color).opacity(0.15), in: Capsule())
     }
 
     private var label: String {
-        if account.expiresSoon(), let until = account.liveUntilDate { return "Expires \(until.relative)" }
-        return account.effectiveStatus.title
+        if account.health == .expiringSoon, let until = account.liveUntilDate { return "Expires \(until.relative)" }
+        return account.health.title
     }
 }
 
-/// The 7pt dot rows use; yellow when the session is about to lapse.
+/// The 7pt dot rows use. Hollow grey = cookies present but the login was never
+/// actually tested; filled green = replayed and confirmed signed in.
 struct StatusDot: View {
     let account: AccountSummary
     var body: some View {
-        Circle()
-            .fill(account.expiresSoon() ? Color.yellow : account.effectiveStatus.color)
-            .frame(width: 7, height: 7)
-            .help(account.effectiveStatus.title)
+        let h = account.health
+        Group {
+            if h == .uncheckedLive {
+                Circle().strokeBorder(Color.secondary, lineWidth: 1.4)
+            } else {
+                Circle().fill(h.color)
+            }
+        }
+        .frame(width: 8, height: 8)
+        .help(verifyHelp)
+    }
+
+    private var verifyHelp: String {
+        switch account.health {
+        case .uncheckedLive: return "Cookies present, login not checked — Verify to be sure"
+        case .confirmedWorking:
+            return "Signed in" + (account.verifiedDate.map { " (checked \($0.relative))" } ?? "")
+        default: return account.health.title
+        }
     }
 }
 

@@ -15,6 +15,7 @@ mod runner;
 mod share;
 mod upgrade;
 mod vault;
+mod verify;
 
 use anyhow::{anyhow, Context, Result};
 use chrono::Utc;
@@ -313,6 +314,16 @@ enum Cmd {
     },
     /// Update an account's liveness from its cookie expiry (generic heuristic).
     Check { id: String },
+    /// Actually test whether saved sessions still sign in, by replaying them in
+    /// a throwaway off-screen browser (no per-site rules). Writes the result
+    /// back so `list` can show which logins are dead.
+    Verify {
+        /// Account ids to check (default: all, or those matching --site).
+        ids: Vec<String>,
+        /// Only accounts for this website.
+        #[arg(long)]
+        site: Option<String>,
+    },
     /// Remove an account.
     Rm { id: String },
     /// Rename an account id.
@@ -556,6 +567,7 @@ fn run(cli: Cli) -> Result<()> {
         }
         Cmd::Fingerprint { id, all } => cmd_fingerprint(id.as_deref(), all, json),
         Cmd::Check { id } => cmd_check(&id, json),
+        Cmd::Verify { ids, site } => verify::cmd_verify(&ids, site.as_deref(), json),
         Cmd::Rm { id } => cmd_rm(&id, json),
         Cmd::Revoke { id } => cmd_rm(&id, json),
         Cmd::Wipe { yes } => cmd_wipe(yes, json),
@@ -689,6 +701,9 @@ fn cmd_list(site_filter: Option<&str>, json_mode: bool) -> Result<()> {
                     "account_hint": a.account_hint, "status": a.status.to_string(),
                     "cookies": a.cookies.len(), "last_used_at": a.last_used_at,
                     "note": a.note, "tags": a.tags,
+                    "verified": a.current_verification().map(|v| json!({
+                        "result": v.result, "at": v.at, "reason": v.reason
+                    })),
                     "live_until": live_until(&a.cookies)
                         .and_then(|exp| chrono::DateTime::from_timestamp(exp, 0))
                         .map(|dt| dt.to_rfc3339()),
@@ -814,22 +829,25 @@ fn cmd_show(id: &str, json: bool) -> Result<()> {
         println!(
             "{}",
             serde_json::to_string(&json!({
-                "id": a.id,
-                "site": a.site,
-                "label": a.label,
-                "hint": a.account_hint,
-                "note": a.note,
-                "tags": a.tags,
-                "status": a.status.to_string(),
-                "cookies": a.cookies.len(),
-                "domains": domains,
-                "expires": expires,
-                "session_only": soonest.is_none(),
-                "local_storage": ls_keys,
-                "created_at": a.created_at,
-                "updated_at": a.updated_at,
-                "last_used_at": a.last_used_at,
-            }))?
+                    "id": a.id,
+                    "site": a.site,
+                    "label": a.label,
+                    "hint": a.account_hint,
+                    "note": a.note,
+                    "tags": a.tags,
+                    "status": a.status.to_string(),
+                    "cookies": a.cookies.len(),
+                    "domains": domains,
+                    "expires": expires,
+                    "session_only": soonest.is_none(),
+                    "local_storage": ls_keys,
+            "verified": a.current_verification().map(|v| json!({
+                "result": v.result, "at": v.at, "reason": v.reason, "url": v.url
+            })),
+                    "created_at": a.created_at,
+                    "updated_at": a.updated_at,
+                    "last_used_at": a.last_used_at,
+                }))?
         );
         return Ok(());
     }
@@ -1309,6 +1327,7 @@ pub(crate) fn store(
         account_hint: hint.or_else(|| prev.as_ref().and_then(|a| a.account_hint.clone())),
         session_updated_at: Some(session_ts),
         meta_updated_at: Some(meta_ts),
+        verified: None,
         note: prev.as_ref().and_then(|a| a.note.clone()),
         tags: prev.as_ref().map(|a| a.tags.clone()).unwrap_or_default(),
         cookies,
@@ -1436,7 +1455,7 @@ fn next_id(vault: &Vault, site: &str) -> String {
     }
 }
 
-fn truncate(s: &str, max: usize) -> String {
+pub(crate) fn truncate(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         s.to_string()
     } else {

@@ -119,7 +119,7 @@ struct MenuBarView: View {
                     Button("Sync between Macs…") { onSheet(.cloud) }
                 }
                 Button("Open manager") { onOpenWindow(nil) }
-                Button("Check all sessions") { Task { await model.checkAll() } }
+                Button("Verify all logins work…") { Task { await model.verify() } }
                 Divider()
                 Button("Settings…", action: onSettings)
                 Button("Quit CookieUse") { NSApp.terminate(nil) }

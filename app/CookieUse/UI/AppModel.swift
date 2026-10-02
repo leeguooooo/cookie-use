@@ -120,8 +120,11 @@ final class AppModel: ObservableObject {
     var allTags: [String] { Array(Set(accounts.flatMap(\.tagList))).sorted() }
 
     var needsAttention: [AccountSummary] {
-        accounts.filter { $0.effectiveStatus == .expired || $0.expiresSoon() }
+        accounts.filter(\.needsAttention)
     }
+
+    /// Whether a Verify pass is running (drives the toolbar spinner).
+    var verifying: Bool { verifyProgress != nil }
 
     var pinnedAccounts: [AccountSummary] {
         prefs.pinned.compactMap { id in accounts.first { $0.id == id } }
@@ -298,12 +301,29 @@ final class AppModel: ObservableObject {
         } catch { return .failure(error) }
     }
 
-    /// Re-derive status from cookie expiry for every account.
-    func checkAll() async {
-        for a in accounts { _ = try? await bridge.check(id: a.id) }
-        await refresh()
-        let n = needsAttention.count
-        show(.success(n == 0 ? "All \(accounts.count) sessions look healthy" : "\(n) session(s) need a fresh login"))
+    /// "checked 3 / 12" while a Verify pass runs, else nil.
+    @Published var verifyProgress: String?
+
+    /// Actually test whether logins still sign in (replays them in a throwaway
+    /// browser). `ids` empty = every account. This opens a real browser
+    /// off-screen and can take a few seconds each, so it is explicit, not automatic.
+    func verify(ids: [String] = []) async {
+        guard verifyProgress == nil else { return }
+        verifyProgress = "Checking…"
+        defer { verifyProgress = nil }
+        do {
+            let r = try await bridge.verify(ids: ids)
+            await refresh()
+            let msg: String
+            if r.invalid == 0 {
+                msg = r.checked == 1 ? "That login works" : "All \(r.valid) checked logins work"
+            } else {
+                msg = "\(r.invalid) of \(r.checked) need a fresh login"
+            }
+            show(.success(msg))
+        } catch {
+            show(.error("Couldn’t check logins: \(error.localizedDescription)"))
+        }
     }
 
     // MARK: Files dropped / opened from Finder

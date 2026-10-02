@@ -138,7 +138,8 @@ See <https://www.skills.sh/docs>. The skill lives at `skills/cookie-use/SKILL.md
 | `cookie-use show <id>` | Account metadata (never prints cookie values) |
 | `cookie-use use <id> [--target session:<s>\|isolated] [--rewrite-domain <host>] [--open-url <url>]` | Apply an account into a browser target |
 | `cookie-use switch <id> --target <…>` | Sign the site's previous account out, then apply (clean switch). Only cookies known for that site are expired — other sites stay signed in |
-| `cookie-use check <id>` | Liveness from cookie expiry (generic; site probes are pluggable later) |
+| `cookie-use check <id>` | Liveness from cookie **expiry** only (fast, offline; doesn't prove the login still works) |
+| `cookie-use verify [ids…] [--site <d>]` | **Actually test** whether saved logins still sign in, by replaying them in a throwaway off-screen browser and comparing to an anonymous visit (no per-site rules). Writes the result back |
 | `cookie-use fingerprint <id> \| --all [--json]` | Export a **hash-only** fingerprint (SHA-256 of each cookie value, never the value) so another tool can verify a live session is this account. Cached in a plaintext sidecar; reads need no decrypt |
 | `cookie-use replay <id> --to localhost:8001` | Cross-origin QA sugar: rewrite domain + open the dev origin in one command |
 | `cookie-use run <id> \| --site <d> --all \| --all` | Open one or many accounts in **side-by-side isolated windows** at once |

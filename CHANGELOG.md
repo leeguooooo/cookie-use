@@ -4,6 +4,8 @@ All notable changes to cookie-use are documented here. Versions follow semver.
 
 ## [Unreleased]
 
+## [0.11.3] - 2026-10-02
+
 ### Fixed
 - App: a real 100% CPU freeze in the menu-bar quick switcher (the earlier
   0.11.2 fix addressed a different, lesser cause). A `LazyVStack` inside the

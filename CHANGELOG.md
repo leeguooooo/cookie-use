@@ -4,6 +4,12 @@ All notable changes to cookie-use are documented here. Versions follow semver.
 
 ## [Unreleased]
 
+### Changed
+- Quick switcher: each account shows once (no more Recent duplicating the site
+  groups), the panel is taller (up to 600 pt), and logins that no longer work
+  collapse into a "Needs login (N)" section at the bottom, hidden by default.
+  Search still spans everything, dead logins included.
+
 ## [0.11.3] - 2026-10-02
 
 ### Fixed

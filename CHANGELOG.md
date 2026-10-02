@@ -4,6 +4,15 @@ All notable changes to cookie-use are documented here. Versions follow semver.
 
 ## [Unreleased]
 
+### Fixed
+- App: a real 100% CPU freeze in the menu-bar quick switcher (the earlier
+  0.11.2 fix addressed a different, lesser cause). A `LazyVStack` inside the
+  popover's `ScrollView` with an estimated `.frame(height:)`, inside the glass
+  container, oscillated its size estimate and spun SwiftUI's layout engine
+  forever (confirmed by a stuck-process backtrace in `LazyLayoutComputer`).
+  The list is now a plain `VStack` measured for its real height — deterministic,
+  content-sized up to 400 pt, still scrolls when long.
+
 ## [0.11.2] - 2026-10-02
 
 ### Fixed

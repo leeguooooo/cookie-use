@@ -13,6 +13,7 @@ struct MenuBarView: View {
     @State private var query = ""
     @State private var selectedKey: String?
     @State private var hoveredKey: String?
+    @State private var contentHeight: CGFloat = 0
     @FocusState private var searchFocused: Bool
 
     private struct Section: Identifiable {
@@ -211,9 +212,14 @@ struct MenuBarView: View {
     }
 
     private var list: some View {
+        // A plain VStack, not LazyVStack: there are only ever a few dozen rows,
+        // and a lazy stack inside a ScrollView with an estimated height (inside
+        // the glass container) oscillated its size estimate and spun SwiftUI's
+        // layout at 100% CPU. A plain stack measures deterministically. The
+        // ScrollView gets a max height and scrolls when the list is long.
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 1) {
+                VStack(alignment: .leading, spacing: 1) {
                     let numbered = Dictionary(uniqueKeysWithValues: entries.prefix(9).enumerated().map { ($1.key, $0 + 1) })
                     ForEach(sections) { section in
                         sectionHeader(section)
@@ -224,8 +230,12 @@ struct MenuBarView: View {
                     }
                 }
                 .padding(.bottom, 6)
+                // Measure the real content height (a plain VStack, so it's
+                // stable and independent of the ScrollView's frame — no layout
+                // feedback). The ScrollView is then content-sized up to 400.
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { contentHeight = $0 }
             }
-            .frame(height: min(400, CGFloat(entries.count) * 42 + CGFloat(sections.count) * 28 + 12))
+            .frame(height: min(max(contentHeight, 1), 400))
             .onChange(of: selectedKey) { _, key in
                 if let key { withAnimation(.easeOut(duration: 0.1)) { proxy.scrollTo(key) } }
             }

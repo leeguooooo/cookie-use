@@ -23,6 +23,10 @@ DMG="${OUT}/${APP_NAME}.dmg"
 ENTITLEMENTS="${SCRIPT_DIR}/CookieUse/App/CookieUse.entitlements"
 IDENTITY="${SIGNING_IDENTITY:-}"
 TEAM_ID="${APPLE_TEAM_ID:-6ZPXG4KVVS}"
+# Release tag version and a monotonic build number (CI passes both); default to project.yml.
+VERSION_ARGS=()
+[[ -n "${APP_VERSION:-}" ]] && VERSION_ARGS+=("MARKETING_VERSION=${APP_VERSION}")
+[[ -n "${APP_BUILD:-}" ]] && VERSION_ARGS+=("CURRENT_PROJECT_VERSION=${APP_BUILD}")
 
 if command -v xcodegen >/dev/null; then (cd "${SCRIPT_DIR}" && xcodegen generate >/dev/null); fi
 mkdir -p "${OUT}"
@@ -39,7 +43,7 @@ if [[ -n "${IDENTITY}" ]]; then
 	# runtime, secure timestamp and entitlements are exactly what notarization checks.
 	xcodebuild -project "${PROJECT}" -scheme "${SCHEME}" -configuration Release \
 		-destination 'platform=macOS' -derivedDataPath "${DERIVED}" \
-		CODE_SIGNING_ALLOWED=NO build >/dev/null
+		${VERSION_ARGS[@]+"${VERSION_ARGS[@]}"} CODE_SIGNING_ALLOWED=NO build >/dev/null
 	ditto "${DERIVED}/Build/Products/Release/${APP_NAME}.app" "${APP}"
 	codesign --force --options runtime --timestamp --entitlements "${ENTITLEMENTS}" \
 		--sign "${IDENTITY}" "${SIGN_ARGS[@]}" "${APP}"
@@ -56,7 +60,7 @@ if [[ -n "${IDENTITY}" ]]; then
 	xcrun stapler staple "${APP}"
 else
 	xcodebuild -project "${PROJECT}" -scheme "${SCHEME}" -configuration Release \
-		-destination 'platform=macOS' -derivedDataPath "${DERIVED}" build >/dev/null
+		-destination 'platform=macOS' -derivedDataPath "${DERIVED}" ${VERSION_ARGS[@]+"${VERSION_ARGS[@]}"} build >/dev/null
 	ditto "${DERIVED}/Build/Products/Release/${APP_NAME}.app" "${APP}"
 fi
 

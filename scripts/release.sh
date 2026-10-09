@@ -30,6 +30,8 @@ awk '/^## \[Unreleased\]/{f=1;next} /^## \[/{f=0} f&&NF{n++} END{exit !n}' CHANG
 [ -n "$DRY" ] && trap 'git checkout -q -- .' EXIT
 
 sed -i.bak "1,/^version = /s/^version = \".*\"/version = \"$V\"/" Cargo.toml && rm Cargo.toml.bak
+# Keep the menu bar app's default version with the CLI (CI stamps the tag anyway).
+sed -i.bak "s/^        MARKETING_VERSION: \".*\"/        MARKETING_VERSION: \"$V\"/" app/project.yml && rm app/project.yml.bak
 cargo update -q -p cookie-use --offline
 awk -v h="## [$V] - $(date +%F)" '{print} $0=="## [Unreleased]"{print ""; print h}' CHANGELOG.md > CHANGELOG.md.tmp && mv CHANGELOG.md.tmp CHANGELOG.md
 cargo fmt --check

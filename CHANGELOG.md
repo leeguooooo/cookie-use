@@ -4,6 +4,21 @@ All notable changes to cookie-use are documented here. Versions follow semver.
 
 ## [Unreleased]
 
+### Added
+- App: the menu bar app now updates itself. It checks at launch, hourly and after
+  wake (a real check at most once a day), offers each new version once, and
+  installs it in place after verifying the checksum, this team's Developer ID
+  signature, Apple notarization, version and architecture. Settings → Updates
+  shows the version and can check or install by hand.
+
+### Fixed
+- App: its version had been stuck at 0.6.3; it is now stamped from the release
+  tag, so the app and the CLI report the same version.
+
+### Note
+- Apps installed before this release (0.6.3) have no updater: run
+  `install-app.sh` once more; every release after that updates in place.
+
 ## [0.11.4] - 2026-10-02
 
 ### Changed

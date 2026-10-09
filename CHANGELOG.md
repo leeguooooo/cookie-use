@@ -4,6 +4,8 @@ All notable changes to cookie-use are documented here. Versions follow semver.
 
 ## [Unreleased]
 
+## [0.11.5] - 2026-10-09
+
 ### Added
 - App: the menu bar app now updates itself. It checks at launch, hourly and after
   wake (a real check at most once a day), offers each new version once, and

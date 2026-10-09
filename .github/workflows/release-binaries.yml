@@ -56,6 +56,8 @@ jobs:
     runs-on: macos-26
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0   # CFBundleVersion = commit count, must keep growing
 
       - name: Install xcodegen
         run: brew install xcodegen
@@ -89,10 +91,18 @@ jobs:
       - name: Build, sign and notarize app + dmg
         env:
           SIGNING_IDENTITY: Developer ID Application
+          # The in-place updater checks the downloaded app's version against the tag.
+          APP_VERSION: ${{ (github.event.inputs.tag || github.ref_name) }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
-        run: bash app/build-dmg.sh
+        run: |
+          set -euo pipefail
+          export APP_VERSION="${APP_VERSION#v}"
+          export APP_BUILD="$(git rev-list --count HEAD)"
+          bash app/build-dmg.sh
+          v="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' app/build/CookieUse.app/Contents/Info.plist)"
+          [ "$v" = "$APP_VERSION" ] || { echo "::error::app version $v != tag $APP_VERSION"; exit 1; }
 
       - name: Verify the dmg actually mounts and contains the app
         # 发一个装不上的资产比不发更糟：用户会照着 README 一路走到 hdiutil 才失败。
@@ -105,6 +115,15 @@ jobs:
       - name: Checksum
         run: cd app/build && shasum -a 256 CookieUse.dmg > CookieUse.dmg.sha256
 
+      # Downloaded by the app's in-place updater (CookieUse/Core/AppUpdater.swift),
+      # which verifies checksum, Developer ID, notarization, version and architecture.
+      - name: Package in-place update archive
+        run: |
+          set -euo pipefail
+          xcrun stapler validate app/build/CookieUse.app
+          tar -czf app/build/CookieUse-macos.tar.gz -C app/build CookieUse.app
+          cd app/build && shasum -a 256 CookieUse-macos.tar.gz > CookieUse-macos.tar.gz.sha256
+
       - name: Upload to release
         uses: softprops/action-gh-release@v2
         with:
@@ -112,3 +131,5 @@ jobs:
           files: |
             app/build/CookieUse.dmg
             app/build/CookieUse.dmg.sha256
+            app/build/CookieUse-macos.tar.gz
+            app/build/CookieUse-macos.tar.gz.sha256

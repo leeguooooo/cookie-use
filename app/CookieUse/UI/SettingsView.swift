@@ -2,6 +2,7 @@ import SwiftUI
 
 struct SettingsView: View {
     @ObservedObject var prefs: Preferences
+    @ObservedObject var updates: UpdateController
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -29,6 +30,10 @@ struct SettingsView: View {
                     }
                     Toggle("Launch at login", isOn: $prefs.launchAtLogin)
                 }
+                Section("Updates") {
+                    LabeledContent("Version", value: updates.currentVersion)
+                    updateRow
+                }
             }
             .formStyle(.grouped)
             HStack {
@@ -38,5 +43,34 @@ struct SettingsView: View {
             .padding([.horizontal, .bottom], 20)
         }
         .frame(width: 460)
+    }
+
+    @ViewBuilder private var updateRow: some View {
+        switch updates.state {
+        case .idle, .upToDate, .failed:
+            HStack {
+                switch updates.state {
+                case .upToDate: Text("You’re up to date.").foregroundStyle(.secondary)
+                case let .failed(message): Text(message).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
+                default: EmptyView()
+                }
+                Spacer()
+                Button("Check for Updates") { Task { await updates.check(userInitiated: true) } }
+            }
+        case .checking:
+            HStack { ProgressView().controlSize(.small); Text("Checking…").foregroundStyle(.secondary) }
+        case let .available(release):
+            HStack {
+                Text("Version \(release.version) is available.")
+                Spacer()
+                Button(release.canInstall ? "Install and Relaunch" : "Open Release Page") { updates.install() }
+                    .buttonStyle(.borderedProminent)
+            }
+        case let .installing(version, progress):
+            VStack(alignment: .leading, spacing: 4) {
+                Text(progress < 1 ? "Downloading \(version)…" : "Installing \(version)…")
+                ProgressView(value: progress)
+            }
+        }
     }
 }

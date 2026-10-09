@@ -24,6 +24,7 @@ final class AppModel: ObservableObject {
     @Published var bannerAction: BannerAction?
 
     let prefs = Preferences()
+    let updates = UpdateController()
     private let bridge = CLIBridge.shared
     private var bannerTask: Task<Void, Never>?
     private var prefsSink: AnyCancellable?

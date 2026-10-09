@@ -57,6 +57,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             await model.refresh()
             await model.loadCloud()
         }
+
+        // The menu bar app runs for weeks: check at launch, hourly and after wake (once a day at most).
+        model.updates.startPeriodicChecks()
     }
 
     /// Double-clicked / dropped-on-Dock `.cusession` bundles and cookie files.
@@ -126,7 +129,7 @@ struct RootWindow: View {
                 case let .importFile(path): ImportSheet(model: model, filePath: path ?? "")
                 case let .redeem(path): RedeemSheet(model: model, bundlePath: path ?? "")
                 case let .share(account): ShareSheet(account: account, model: model)
-                case .settings: SettingsView(prefs: model.prefs)
+                case .settings: SettingsView(prefs: model.prefs, updates: model.updates)
                 case .copy: CopySheet(model: model)
                 case let .export(site): ExportSheet(model: model, site: site)
                 case .cloud: CloudSyncSheet(model: model, prefs: model.prefs)
